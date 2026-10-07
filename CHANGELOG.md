@@ -3,6 +3,12 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.1.2
+
+- No Render only listens for blocks and entities while it hides some (a block list, Vines, an entity list or Dead
+  Entities). Before, its block hook ran for every block of every chunk the game rebuilt, tens of thousands of calls a
+  second while moving, even with nothing to hide.
+
 ## 0.1.1
 
 The first release from its own repository, replacing 0.1.0 (withdrawn): the stock modules (Combat, Movement,

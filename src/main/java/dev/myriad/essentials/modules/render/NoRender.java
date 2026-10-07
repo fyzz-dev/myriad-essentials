@@ -1,5 +1,6 @@
 package dev.myriad.essentials.modules.render;
 
+import dev.myriad.api.Myriad;
 import dev.myriad.api.event.Subscribe;
 import dev.myriad.api.event.events.BlockRenderEvent;
 import dev.myriad.api.event.events.EntityRenderEvent;
@@ -9,6 +10,7 @@ import dev.myriad.api.module.Modules;
 import dev.myriad.api.setting.BoolSetting;
 import dev.myriad.api.setting.RegistryListSetting;
 import dev.myriad.api.setting.SettingGroup;
+import java.util.Set;
 import java.util.function.Function;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -53,10 +55,16 @@ public class NoRender extends Module {
 	public final BoolSetting damageTint = sgWorld.bool("Damage Tint").description("No red tint on hurt entities.").build();
 	public final BoolSetting fog = sgWorld.bool("Fog").description("No distance or weather fog (water and lava fog stay).").build();
 	public final BoolSetting glint = sgWorld.bool("Enchantment Glint").description("No shimmer on enchanted items and armour.").build();
-	public final BoolSetting deadEntities = sgWorld.bool("Dead Entities").description("Hide entities as soon as they die.").build();
-	private final RegistryListSetting<EntityType<?>> entities = sgWorld.entityTypes("Entities").description("Entity types never drawn.").build();
-	private final RegistryListSetting<Block> blocks = sgWorld.blocks("Blocks").description("Blocks never drawn.").onChanged(v -> reload()).build();
-	public final BoolSetting vines = sgWorld.bool("Vines").description("Hide vines, kelp and other hanging plants.").onChanged(v -> reload()).build();
+	public final BoolSetting deadEntities = sgWorld.bool("Dead Entities").description("Hide entities as soon as they die.").onChanged(v -> updateFilters()).build();
+	private final RegistryListSetting<EntityType<?>> entities = sgWorld.entityTypes("Entities").description("Entity types never drawn.").onChanged(v -> updateFilters()).build();
+	private final RegistryListSetting<Block> blocks = sgWorld.blocks("Blocks").description("Blocks never drawn.").onChanged(v -> {
+		updateFilters();
+		reload();
+	}).build();
+	public final BoolSetting vines = sgWorld.bool("Vines").description("Hide vines, kelp and other hanging plants.").onChanged(v -> {
+		updateFilters();
+		reload();
+	}).build();
 	public final BoolSetting textureRotations = sgWorld.bool("Texture Rotations").description("Remove random block offsets (flowers, grass), which can leak coordinates.")
 		.onChanged(v -> reload()).build();
 
@@ -73,33 +81,58 @@ public class NoRender extends Module {
 		return m != null && option.apply(m).get();
 	}
 
+	/**
+	 * The entity and block filters only listen while they have something to hide: the block one is asked for every block
+	 * of every chunk the game meshes, and the entity one for every entity each frame, so an idle listener there is
+	 * tens of thousands of calls a second for nothing.
+	 */
+	private final EntityFilter entityFilter = new EntityFilter();
+	private final BlockFilter blockFilter = new BlockFilter();
+
+	private final class EntityFilter {
+		@Subscribe
+		private void onEntity(EntityRenderEvent.Visible e) {
+			Entity entity = e.entity();
+			if (entities.contains(entity.getType()) || deadEntities.get() && entity instanceof LivingEntity l && l.isDeadOrDying()) e.cancel();
+		}
+	}
+
+	private final class BlockFilter {
+		/** Hidden blocks leave the chunk mesh (asked on the chunk builder threads; settings are safe to read there). */
+		@Subscribe
+		private void onBlock(BlockRenderEvent e) {
+			Block b = e.state().getBlock();
+			if (blocks.contains(b) || vines.get() && VINES.contains(b)) e.cancel();
+		}
+	}
+
+	private static final Set<Block> VINES = Set.of(Blocks.VINE, Blocks.CAVE_VINES, Blocks.CAVE_VINES_PLANT, Blocks.TWISTING_VINES, Blocks.TWISTING_VINES_PLANT,
+		Blocks.WEEPING_VINES, Blocks.WEEPING_VINES_PLANT, Blocks.KELP, Blocks.KELP_PLANT, Blocks.GLOW_LICHEN);
+
 	@Override
 	protected void onEnable() {
+		updateFilters();
 		reload();
 	}
 
 	@Override
 	protected void onDisable() {
+		updateFilters();
 		reload();
+	}
+
+	private void updateFilters() {
+		listen(entityFilter, isEnabled() && (!entities.get().isEmpty() || deadEntities.get()));
+		listen(blockFilter, isEnabled() && (!blocks.get().isEmpty() || vines.get()));
+	}
+
+	private static void listen(Object listener, boolean on) {
+		var bus = Myriad.events();
+		if (on && !bus.isSubscribed(listener)) bus.subscribe(listener);
+		else if (!on && bus.isSubscribed(listener)) bus.unsubscribe(listener);
 	}
 
 	private void reload() {
 		if (mc.levelRenderer != null && mc.level != null && (isEnabled() || !blocks.get().isEmpty() || vines.get() || textureRotations.get())) mc.levelRenderer.invalidateCompiledGeometry(mc.level, mc.options, mc.gameRenderer.mainCamera(), mc.getBlockColors());
-	}
-
-	/** Hidden entities aren't drawn at all. */
-	@Subscribe
-	private void onEntity(EntityRenderEvent.Visible e) {
-		Entity entity = e.entity();
-		if (entities.contains(entity.getType()) || deadEntities.get() && entity instanceof LivingEntity l && l.isDeadOrDying()) e.cancel();
-	}
-
-	/** Hidden blocks leave the chunk mesh (asked on the chunk builder threads; settings are safe to read there). */
-	@Subscribe
-	private void onBlock(BlockRenderEvent e) {
-		Block b = e.state().getBlock();
-		if (blocks.contains(b) || vines.get() && (b == Blocks.VINE || b == Blocks.CAVE_VINES || b == Blocks.CAVE_VINES_PLANT || b == Blocks.TWISTING_VINES
-			|| b == Blocks.TWISTING_VINES_PLANT || b == Blocks.WEEPING_VINES || b == Blocks.WEEPING_VINES_PLANT || b == Blocks.KELP || b == Blocks.KELP_PLANT
-			|| b == Blocks.GLOW_LICHEN)) e.cancel();
 	}
 }
