@@ -1,0 +1,60 @@
+# Builds a tagged version, attaches the jar (and sources) to a GitHub release, and publishes it to Myriad's maven
+# (the `maven` branch of fyzz-dev/myriad, served at https://fyzz-dev.github.io/myriad) so addons can put Essentials
+# on their dev runtime. Tag with mod_version from gradle.properties: `git tag v0.1.1 && git push origin v0.1.1`.
+#
+# The maven push uses the MAVEN_DEPLOY_KEY secret: the private half of a deploy key with write access on fyzz-dev/myriad.
+
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v6
+      - name: validate gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: setup jdk
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'microsoft'
+      - name: make gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: check the tag matches gradle.properties
+        run: |
+          version=$(grep '^mod_version=' gradle.properties | cut -d= -f2)
+          [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but gradle.properties says $version"; exit 1; }
+      - name: build and test
+        run: ./gradlew build
+      - name: release notes from the changelog
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" '/^## /{p = ($2 == v)} p' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "Myriad Essentials $version" > notes.md
+      - name: create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          files: build/libs/*.jar
+      - name: publish to Myriad's maven
+        env:
+          MAVEN_DEPLOY_KEY: ${{ secrets.MAVEN_DEPLOY_KEY }}
+        run: |
+          ./gradlew publishAllPublicationsToSiteRepository
+          mkdir -p ~/.ssh
+          printf '%s\n' "$MAVEN_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git clone --depth 1 -b maven git@github.com:fyzz-dev/myriad.git maven-branch
+          cp -r build/maven/. maven-branch/
+          cd maven-branch
+          git add -A
+          git -c user.name=github-actions -c user.email=github-actions@github.com commit -m "Publish myriad-essentials ${GITHUB_REF_NAME#v}"
+          git push

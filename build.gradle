@@ -1,0 +1,116 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	// Myriad's releases.
+	maven {
+		name = "Myriad"
+		url = "https://fyzz-dev.github.io/myriad"
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// The released core by default. While changing core and Essentials together, build core's jar in a checkout next
+	// to this one (`./gradlew :core:jar` there) and point here at it: `./gradlew build -PcoreDir=../myriad`. No
+	// publishing step, and no version bump until the core change is released.
+	if (project.hasProperty("coreDir")) {
+		implementation fileTree(dir: "${project.coreDir}/core/build/libs", include: "myriad-*.jar", exclude: ["*-sources.jar", "*-javadoc.jar"])
+	} else {
+		implementation "dev.myriad:myriad:${project.myriad_version}"
+	}
+}
+
+loom {
+	runs {
+		client {
+			// The same dev switches as Myriad's own runs.
+			property("myriad.openDesktop", project.hasProperty("openDesktop").toString())
+			if (project.hasProperty("screenshotEvery")) property("myriad.screenshotEvery", project.property("screenshotEvery").toString())
+			property("myriad.auditMixins", project.hasProperty("auditMixins").toString())
+			// Lines appended to run/myriad-dev-inbox are run in game (Myriad commands, held keys, the menu, screenshots);
+			// tools/grim-test/client writes there.
+			property("myriad.devConsole", "myriad-dev-inbox")
+			if (project.hasProperty("quickPlay")) programArgs("--quickPlaySingleplayer", project.property("quickPlay").toString())
+			// -PquickPlayServer=localhost:25565 joins a server (the Grim test server in tools/grim-test).
+			if (project.hasProperty("quickPlayServer")) programArgs("--quickPlayMultiplayer", project.property("quickPlayServer").toString())
+			if (project.hasProperty("username")) programArgs("--username", project.property("username").toString())
+		}
+	}
+}
+
+processResources {
+	def props = [version: project.version, myriad_version: project.myriad_version, minecraft_version: project.minecraft_version]
+	inputs.properties props
+	filesMatching("fabric.mod.json") {
+		expand props
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = "UTF-8"
+	it.options.compilerArgs += ["-Xmaxerrs", "10000"]
+}
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+	from("LICENSE") {
+		rename { "${it}_${project.base.archivesName.get()}" }
+	}
+}
+
+// Essentials is an ordinary addon and may only use Myriad's public API. dev.myriad.impl is internal and changes
+// without notice, so a reference to it fails the build here rather than players' games later.
+def checkApiOnly = tasks.register("checkApiOnly") {
+	group = "verification"
+	description = "Fails if Essentials references Myriad internals (dev.myriad.impl)."
+	def sources = fileTree("src/main/java") { include "**/*.java" }
+	inputs.files(sources)
+	doLast {
+		def bad = []
+		sources.each { f ->
+			f.eachLine { line, n ->
+				if (line.contains("dev.myriad.impl")) bad << "${projectDir.toPath().relativize(f.toPath())}:${n}: ${line.trim()}"
+			}
+		}
+		if (!bad.isEmpty()) {
+			throw new GradleException("Addons may only use Myriad's API (dev.myriad.api.*), but these lines reference internals:\n  " + bad.join("\n  "))
+		}
+	}
+}
+tasks.named("compileJava") { dependsOn checkApiOnly }
+
+// `publishToMavenLocal` for an addon that wants Essentials on its dev runtime before a release; the release workflow
+// uses `publishAllPublicationsToSiteRepository` and pushes build/maven to Myriad's maven branch.
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			artifactId = project.archives_base_name
+			from components.java
+		}
+	}
+	repositories {
+		maven {
+			name = "site"
+			url = layout.buildDirectory.dir("maven")
+		}
+	}
+}

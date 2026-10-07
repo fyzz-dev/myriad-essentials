@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Grim's flags from the console log.
+#   ./flags mark     remember where the log is now (do this before a test)
+#   ./flags          flags since the last mark (all of them if never marked); exit 1 if there are any
+#   ./flags all      every flag this run
+#   ./flags follow   print flags as they happen
+cd "$(dirname "$0")"
+log=server/console.log
+pattern='failed |\[Grim|GrimAC.*(setback|kicked)'
+case "${1:-}" in
+	mark) stat -c %s "$log" > .flags-mark; echo "marked";;
+	all) grep -aE "$pattern" "$log" | sed 's/\x1b\[[0-9;]*m//g' | grep -aiE "failed|setback|kick";;
+	follow) tail -n0 -F "$log" | grep -a --line-buffered -E "$pattern" | sed -u 's/\x1b\[[0-9;]*m//g';;
+	*)
+		from=$(( $(cat .flags-mark 2>/dev/null || echo 0) + 1 ))
+		out=$(tail -c +"$from" "$log" | grep -aE "$pattern" | sed 's/\x1b\[[0-9;]*m//g' | grep -aiE "failed|setback|kick")
+		if [[ -n "$out" ]]; then echo "$out"; exit 1; else echo "no flags"; fi;;
+esac

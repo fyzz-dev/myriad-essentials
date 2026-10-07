@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Runs server commands over RCON and prints what they return.
+
+  ./cmd "give Player123 diamond_pickaxe"     one command
+  ./cmd "tp Player123 0 100 0" "time set day" several, in order
+  echo "list" | ./cmd -                       one per line from stdin
+"""
+import os, socket, struct, sys
+
+def env():
+    vals = {}
+    for line in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "versions.env")):
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.strip().split("=", 1)
+            vals[k] = v
+    return vals
+
+def packet(sock, req_id, kind, body):
+    data = struct.pack("<ii", req_id, kind) + body.encode() + b"\x00\x00"
+    sock.sendall(struct.pack("<i", len(data)) + data)
+
+def read(sock):
+    def exact(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("server closed the connection")
+            buf += chunk
+        return buf
+    length = struct.unpack("<i", exact(4))[0]
+    data = exact(length)
+    req_id, kind = struct.unpack("<ii", data[:8])
+    return req_id, data[8:-2].decode(errors="replace")
+
+def main():
+    args = sys.argv[1:]
+    if args == ["-"]:
+        args = [l.strip() for l in sys.stdin if l.strip()]
+    if not args:
+        print(__doc__.strip()); sys.exit(2)
+    e = env()
+    with socket.create_connection(("127.0.0.1", int(e["RCON_PORT"])), timeout=10) as s:
+        packet(s, 1, 3, e["RCON_PASSWORD"])
+        if read(s)[0] == -1:
+            sys.exit("rcon login refused")
+        for i, command in enumerate(args, start=2):
+            packet(s, i, 2, command.lstrip("/"))
+            out = read(s)[1]
+            # Strip colour codes so output reads cleanly.
+            out = "".join(c for j, c in enumerate(out) if c != "§" and (j == 0 or out[j - 1] != "§"))
+            if out: print(out)
+
+if __name__ == "__main__":
+    main()

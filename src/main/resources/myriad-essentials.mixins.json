@@ -1,0 +1,37 @@
+{
+	"required": true,
+	"package": "dev.myriad.essentials.mixin",
+	"plugin": "dev.myriad.api.mixin.CompatMixinPlugin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"AbstractBlockStateMixin",
+		"ArmorFeatureRendererMixin",
+		"AtmosphericFogMixin",
+		"BossBarHudMixin",
+		"CameraMixin",
+		"ClientCommonPacketListenerMixin",
+		"ClientLevelMixin",
+		"ClientPlayerEntityMixin",
+		"EntityAccessor",
+		"EntityMixin",
+		"EntityRenderDispatcherMixin",
+		"ExperienceBarMixin",
+		"FireworkRocketEntityAccessor",
+		"FogEnvironmentMixin",
+		"FogRendererMixin",
+		"GameRendererMixin",
+		"HeldItemRendererMixin",
+		"InGameHudMixin",
+		"InGameOverlayRendererMixin",
+		"ItemStackMixin",
+		"LightmapMixin",
+		"LivingEntityMixin",
+		"LivingEntityRendererMixin",
+		"PlayerEntityMixin",
+		"ToastManagerMixin",
+		"WorldRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

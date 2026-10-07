@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Drives the Myriad dev client (started with this repo's runClient) and prints what it logged.
+
+  ./client ".toggle kill_aura" "hold forward,sprint 40" "wait 40" status
+  ./client - < script.txt          one step per line (# comments allowed)
+  ./client --timeout 120 ...       wait longer for long scripts (default 60 s)
+
+Steps: .myriad command | /server command | hold <keys> <ticks> | release | look <yaw> <pitch> | select <1-9>
+| attack | use | middle | wait <ticks> | respawn | selftest [ticks] [-module] | status | echo <text>.
+Keys: forward, back, left, right, jump, sneak, sprint.
+"""
+import os, sys, time, uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RUN = os.path.join(HERE, "..", "..", "run")
+INBOX = os.path.join(RUN, "myriad-dev-inbox")
+LOG = os.path.join(RUN, "logs", "latest.log")
+
+def main():
+    args = sys.argv[1:]
+    timeout = 60
+    if args[:1] == ["--timeout"]:
+        timeout, args = float(args[1]), args[2:]
+    if args == ["-"]:
+        args = [l.strip() for l in sys.stdin if l.strip() and not l.strip().startswith("#")]
+    if not args:
+        print(__doc__.strip()); sys.exit(2)
+    if not os.path.exists(INBOX):
+        sys.exit("no dev client running (start it from the repo root: ./gradlew runClient -PquickPlayServer=localhost:25565 -Pusername=GrimTester)")
+    start = os.path.getsize(LOG) if os.path.exists(LOG) else 0
+    token = uuid.uuid4().hex[:8]
+    with open(INBOX, "a") as f:
+        for a in args: f.write(a + "\n")
+        f.write(f"echo done {token}\n")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        size = os.path.getsize(LOG)
+        if size < start: start = 0
+        with open(LOG, errors="replace") as f:
+            f.seek(start)
+            text = f.read()
+        if f"[dev] echo done {token}" in text:
+            for line in text.splitlines():
+                if ("Myriad/Dev" in line or "[CHAT]" in line) and f"done {token}" not in line:
+                    print(line.split("]: ", 1)[-1])
+            return
+        time.sleep(0.2)
+    sys.exit(f"timed out after {timeout:.0f} s (is the client in game and focused on nothing blocking ticks?)")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Runs the Essentials test suite against the local Grim server and the dev client, and prints a table.
+
+  ./suite              every test
+  ./suite kill_aura    tests whose name contains any of the words given
+  ./suite --list       the tests
+
+Needs the server (./start.sh) and the dev client in game as GrimTester (op). Each test sets up its own scene (most of
+them on a stone floor around x=1000 so they don't touch the rest of the world), runs client steps, then checks the
+result on the server and that Grim flagged nothing. Exit code 1 if anything failed.
+"""
+import os, re, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+P = "GrimTester"
+# The test floor: stone at y=99, air above, around x=1000 z=0.
+ARENA = ["fill 980 99 -20 1040 99 20 stone", "fill 980 100 -20 1040 115 20 air"]
+
+
+def sh(*args, timeout=180):
+    r = subprocess.run([os.path.join(HERE, args[0]), *args[1:]], capture_output=True, text=True, timeout=timeout)
+    return r.stdout + r.stderr
+
+
+def cmd(*commands):
+    return sh("cmd", *commands)
+
+
+def client(*steps, timeout=120):
+    return sh("client", "--timeout", str(timeout), *steps, timeout=timeout + 30)
+
+
+def passed(condition):
+    """Runs an execute if/unless test on the server."""
+    return "passed" in cmd("execute " + condition)
+
+
+def data(path):
+    out = cmd(f"data get entity {P} {path}")
+    m = re.search(r"entity data: (.*)", out)
+    return m.group(1).strip() if m else ""
+
+
+def count(slot):
+    """The item count in an inventory slot number as the server stores it (0-8 hotbar, 9-35 main, -106 off hand)."""
+    m = re.search(r"count: (\d+)", data(f"Inventory[{{Slot:{slot}b}}]"))
+    return int(m.group(1)) if m else 0
+
+
+def item(slot):
+    m = re.search(r'id: "([^"]+)"', data(f"Inventory[{{Slot:{slot}b}}]"))
+    return m.group(1) if m else ""
+
+
+def position():
+    nums = re.findall(r"(-?[\d.]+)d", data("Pos"))
+    return tuple(float(n) for n in nums[:3]) if len(nums) >= 3 else (0, 0, 0)
+
+
+def reset(x=1000.5, y=100, z=0.5, yaw=-90, pitch=0, arena=True):
+    client("respawn", ".panic", "wait 20")
+    # The server only changes loaded chunks: go there first, then build, then stand on it.
+    cmd(f"gamemode survival {P}", f"tp {P} {x} {y + 30} {z} {yaw} {pitch}", f"effect give {P} slow_falling 3 0 true")
+    time.sleep(1.5)
+    cmd(*(ARENA if arena else []), f"clear {P}", f"effect clear {P}", f"kill @e[type=!player,distance=..64,x={x},y={y},z={z}]",
+        f"tp {P} {x} {y} {z} {yaw} {pitch}", f"effect give {P} saturation 1 20 true")
+    time.sleep(1.5)
+    # Grim's opinion of the setup (teleports, slow falling) isn't the module's: count flags from here.
+    sh("flags", "mark")
+
+
+# ---- tests: each returns (ok, detail) -----------------------------------------------------------------------------------
+
+def t_anticheat():
+    out = client(".anticheat")
+    return "Grim detected" in out, out.strip().splitlines()[-1] if out.strip() else "no output"
+
+
+def t_selftest():
+    # Looking down at the floor, with a bedrock hole and an obsidian crystal base nearby for the helpers to find.
+    reset(pitch=30)
+    cmd(f"item replace entity {P} hotbar.0 with diamond_sword", f"item replace entity {P} inventory.0 with totem_of_undying",
+        f"item replace entity {P} hotbar.8 with cooked_beef 16", "setblock 1005 99 4 bedrock", "fill 1004 100 4 1006 100 4 bedrock",
+        "setblock 1005 100 3 bedrock", "setblock 1005 100 5 bedrock", "setblock 1005 100 4 air", "setblock 1002 100 -3 obsidian")
+    time.sleep(1)
+    out = client("selftest 20 -auto_disconnect", timeout=600)
+    m = re.search(r"selftest: (\d+) modules run, (\d+) failures", out)
+    fails = [l.split("FAIL ", 1)[1] for l in out.splitlines() if "selftest: FAIL" in l]
+    helpers = next((l.split("helpers: ", 1)[1] for l in out.splitlines() if "selftest: helpers:" in l), "")
+    if not m:
+        return False, "no selftest report"
+    h = re.search(r"(\d+) holes, (\d+) crystal bases, snowball lands \(([-\d.]+), ([-\d.]+), ([-\d.]+)\)", helpers)
+    helpers_ok = bool(h) and int(h.group(1)) >= 1 and int(h.group(2)) >= 1 and abs(float(h.group(4)) - 100) < 0.01
+    return int(m.group(2)) == 0 and helpers_ok, f"{m.group(1)} modules, {m.group(2)} failures" + ("; " + "; ".join(fails[:3]) if fails else "") \
+        + (f" | helpers{'' if helpers_ok else ' WRONG'}: {helpers}" if helpers else "")
+
+
+def t_kill_aura_holding():
+    reset()
+    cmd(f"item replace entity {P} hotbar.0 with diamond_sword", "summon husk 1003.5 100 0.5 {NoAI:1b,Health:10f,Tags:[\"suite\"]}")
+    time.sleep(0.5)
+    client("select 1", ".set kill_aura weapon holding", ".toggle kill_aura on", "wait 60", ".toggle kill_aura off")
+    return passed("unless entity @e[tag=suite]"), "husk killed with the held sword"
+
+
+def t_kill_aura_switch():
+    reset()
+    cmd(f"item replace entity {P} inventory.4 with diamond_sword", f"item replace entity {P} hotbar.0 with dirt 16",
+        "summon husk 1003.5 100 0.5 {NoAI:1b,Health:10f,Tags:[\"suite\"]}")
+    time.sleep(0.5)
+    out = client("select 1", ".set kill_aura weapon switch", ".toggle kill_aura on", "wait 80", "status", ".toggle kill_aura off", "wait 30", ".set kill_aura weapon holding")
+    shown = re.search(r"item=(\S+)", out)
+    killed = passed("unless entity @e[tag=suite]")
+    back = item(13) == "minecraft:diamond_sword"
+    return killed and back and shown and shown.group(1).endswith("dirt"), f"killed={killed}, hand showed {shown.group(1) if shown else '?'}, sword back in inventory={back}"
+
+
+def t_packet_mine():
+    reset()
+    cmd("setblock 1003 100 0 deepslate", f"item replace entity {P} hotbar.0 with netherite_pickaxe", f"item replace entity {P} hotbar.1 with dirt 16")
+    # Eyes at (1000.5, 101.62, 0.5) to the block's centre (1003.5, 100.5, 0.5).
+    client("select 2", ".toggle packet_mine on", "look -90 20.47", "wait 2", "attack", "wait 40", ".toggle packet_mine off")
+    return passed("if block 1003 100 0 air"), "deepslate mined with the pickaxe from another slot"
+
+
+def t_scaffold():
+    reset(z=-10.5, yaw=0)
+    cmd("fill 980 99 -8 1040 99 20 air", f"item replace entity {P} hotbar.0 with dirt 64")
+    # The test server's Grim checks where you look when placing (RotationPlace); 2b2t's doesn't.
+    out = client("select 1", ".set scaffold rotate true", ".toggle scaffold on", "wait 2", "hold forward,sprint 30", "wait 32", "status", ".toggle scaffold off", ".set scaffold rotate false")
+    placed = sum(passed(f"if block 1000 99 {z} dirt") for z in range(-7, -1))
+    y = position()[1]
+    return placed >= 5 and y >= 99.9, f"{placed}/6 blocks bridged, y={y:.2f}"
+
+
+def t_offhand():
+    reset()
+    cmd(f"item replace entity {P} inventory.5 with totem_of_undying")
+    client(".toggle offhand on", "wait 20", ".toggle offhand off")
+    return item(-106) == "minecraft:totem_of_undying", f"off hand holds {item(-106) or 'nothing'}"
+
+
+def t_auto_armor():
+    reset()
+    cmd(*(f"item replace entity {P} inventory.{i} with diamond_{p}" for i, p in enumerate(["helmet", "chestplate", "leggings", "boots"])))
+    client(".toggle auto_armor on", "wait 40", ".toggle auto_armor off")
+    worn = [item(s) for s in (100, 101, 102, 103)]
+    return all(w.startswith("minecraft:diamond_") for w in worn), "worn: " + ", ".join(w.removeprefix("minecraft:") or "-" for w in worn)
+
+
+def food():
+    m = re.search(r"(\d+)", data("foodLevel"))
+    return int(m.group(1)) if m else -1
+
+
+def t_auto_eat():
+    reset()
+    cmd(f"item replace entity {P} hotbar.8 with cooked_beef 16", f"effect clear {P}")
+    # Hunger in short strong bursts until the food bar is low (a very high amplifier overflows into healing).
+    for _ in range(20):
+        if 0 <= food() <= 5: break
+        cmd(f"effect give {P} hunger 1 100 true")
+        time.sleep(1.2)
+    before = food()
+    client(".toggle auto_eat on", "wait 120", ".toggle auto_eat off", timeout=60)
+    left, after = count(8), food()
+    return left < 16 and after > before, f"food {before} -> {after}, {16 - left} eaten"
+
+
+def t_stack_replenish():
+    reset()
+    cmd(f"item replace entity {P} hotbar.0 with cobblestone 1", f"item replace entity {P} inventory.0 with cobblestone 64")
+    client(".toggle stack_replenish on", "wait 30", ".toggle stack_replenish off")
+    return count(0) > 1, f"hotbar stack now {count(0)}"
+
+
+def t_elytra_altitude():
+    client("respawn", ".panic", "wait 20")
+    cmd(f"clear {P}", f"gamemode survival {P}", f"item replace entity {P} armor.chest with elytra", f"tp {P} 2000.5 230 0.5 -90 0")
+    time.sleep(1.5)
+    x0 = position()[0]
+    client(".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 200", ".toggle elytra_fly off", timeout=90)
+    x, y, _ = position()
+    wear = re.search(r"Damage: (\d+)", data("Inventory[{Slot:102b}]"))
+    return x - x0 > 60 and y > 150, f"{x - x0:.0f} blocks in 10 s, y={y:.0f}, elytra damage {wear.group(1) if wear else 0}"
+
+
+def t_elytra_no_durability():
+    client("respawn", ".panic", "wait 20")
+    cmd(f"clear {P}", f"gamemode survival {P}", f"item replace entity {P} armor.chest with elytra", f"item replace entity {P} hotbar.1 with diamond_chestplate",
+        f"tp {P} 3000.5 230 0.5 -90 0")
+    time.sleep(1.5)
+    client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 200",
+        ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=90)
+    wear = re.search(r"Damage: (\d+)", data("Inventory[{Slot:102b}]") + data("Inventory[{Slot:1b}]"))
+    damage = int(wear.group(1)) if wear else 0
+    return damage <= 2, f"elytra damage {damage} after 10 s of flight"
+
+
+TESTS = [
+    ("anticheat detects Grim", t_anticheat),
+    ("selftest (every module)", t_selftest),
+    ("kill_aura holding", t_kill_aura_holding),
+    ("kill_aura switch", t_kill_aura_switch),
+    ("packet_mine", t_packet_mine),
+    ("scaffold", t_scaffold),
+    ("offhand", t_offhand),
+    ("auto_armor", t_auto_armor),
+    ("auto_eat", t_auto_eat),
+    ("stack_replenish", t_stack_replenish),
+    ("elytra_fly altitude", t_elytra_altitude),
+    ("elytra_tweaks no durability", t_elytra_no_durability),
+]
+# Tests that toggle many modules at once; Grim's opinion of them isn't part of the result.
+FLAGS_IGNORED = {"selftest (every module)"}
+
+
+def main():
+    args = sys.argv[1:]
+    if args == ["--list"]:
+        for name, _ in TESTS: print(name)
+        return
+    if "no dev client" in client("echo ping", timeout=10):
+        sys.exit("no dev client running (see README)")
+    chosen = [(n, f) for n, f in TESTS if not args or any(a in n for a in args)]
+    results = []
+    for name, test in chosen:
+        sh("flags", "mark")
+        start = time.time()
+        try:
+            ok, detail = test()
+        except Exception as e:
+            ok, detail = False, f"error: {e}"
+        flags = sh("flags")
+        flagged = sorted(set(re.findall(r"failed (\w+)", flags)))
+        if flagged and name not in FLAGS_IGNORED: ok = False
+        results.append((name, ok, detail, flagged, time.time() - start))
+        print(f"{'PASS' if ok else 'FAIL'}  {name:<30} {detail}" + (f"  [flags: {', '.join(flagged)}]" if flagged else ""), flush=True)
+    failed = [r for r in results if not r[1]]
+    print(f"\n{len(results) - len(failed)}/{len(results)} passed")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()
