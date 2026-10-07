@@ -1,6 +1,6 @@
 # Myriad Essentials
 
-The stock modules and HUD elements for [Myriad](https://github.com/fyzz-dev/myriad). Essentials is an ordinary
+The stock modules and HUD elements for [Myriad](https://myriadclient.dev/) ([source](https://github.com/fyzz-dev/myriad)). Essentials is an ordinary
 addon: it's built on Myriad's public API like any other (the build fails if it touches internals), it's versioned and
 released on its own, and Myriad runs without it. Everything here is made for 2b2t and passes Grim by default.
 
