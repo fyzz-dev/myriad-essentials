@@ -207,10 +207,10 @@ def t_elytra_no_durability_landing():
     # No Durability keeps the server from gliding you, so it counts every block you come down as a fall; gliding down
     # to the ground afterwards must not cost any of it.
     client("respawn", ".panic", "wait 20")
+    # Force-loaded chunks take the fill without anyone there; then stand on the floor while setting up.
     cmd("forceload add 4990 -24 5400 24")
-    cmd(f"tp {P} 5000.5 160 10.5 -90 0")
-    time.sleep(1.5)
-    cmd("fill 4990 150 -20 5400 150 20 stone", "fill 4990 151 -20 5400 240 20 air", f"clear {P}", f"gamemode survival {P}", f"effect clear {P}",
+    time.sleep(1)
+    cmd("fill 4990 150 -20 5400 150 20 stone", f"tp {P} 5000.5 151 10.5 -90 0", f"clear {P}", f"gamemode survival {P}", f"effect clear {P}",
         f"effect give {P} instant_health 1 5 true", f"item replace entity {P} armor.chest with elytra", f"item replace entity {P} hotbar.1 with diamond_chestplate")
     client(".set elytra_tweaks no_durability true", ".set elytra_fly mode altitude", "look -90 0", timeout=30)
     cmd(f"tp {P} 5000.5 230 10.5 -90 0")
@@ -218,7 +218,8 @@ def t_elytra_no_durability_landing():
         timeout=90)
     x, y, _ = position()
     hp = health()
-    return hp >= 20 and y < 152, f"landed at y={y:.1f} after {x - 5000:.0f} blocks, health {hp:.1f}"
+    # Dying puts you back at spawn, at full health: only a landing out here counts.
+    return hp >= 20 and y < 152 and x > 5000, f"landed at y={y:.1f} after {x - 5000:.0f} blocks, health {hp:.1f}"
 
 
 def recast_highway(*setup):
@@ -249,6 +250,21 @@ def t_elytra_recast_obstacles():
     return mined and 4160 < x < 4250 and y > 200.5, f"chest {'mined' if mined else 'still there'}, stopped at x={x:.1f} (hole at 4250)"
 
 
+def t_elytra_wearing_out():
+    # Altitude with an elytra that won't last the flight (102 uses left, 225 blocks up, no No Durability): it has to come
+    # down and land before it breaks, not fall when it does.
+    client("respawn", ".panic", "wait 20")
+    cmd(f"clear {P}", f"gamemode survival {P}", f"effect clear {P}", f"effect give {P} instant_health 1 5 true",
+        f"item replace entity {P} armor.chest with elytra[damage=330]")
+    client(".set elytra_fly mode altitude", "look -90 0", timeout=30)
+    cmd(f"tp {P} 7000.5 300 0.5 -90 0")
+    client(".toggle elytra_fly on", "wait 1400", ".toggle elytra_fly off", timeout=120)
+    x, y, _ = position()
+    hp = health()
+    wear = re.search(r"damage\": (\d+)", data("Inventory[{Slot:102b}]"))
+    return hp >= 20 and x > 7000, f"landed at y={y:.0f} after {x - 7000:.0f} blocks, health {hp:.0f}, elytra damage {wear.group(1) if wear else '?'} of 432"
+
+
 TESTS = [
     ("anticheat detects Grim", t_anticheat),
     ("selftest (every module)", t_selftest),
@@ -265,6 +281,7 @@ TESTS = [
     ("elytra_fly recast obstacles", t_elytra_recast_obstacles),
     ("elytra_tweaks no durability", t_elytra_no_durability),
     ("elytra_tweaks no durability landing", t_elytra_no_durability_landing),
+    ("elytra_fly altitude wearing out", t_elytra_wearing_out),
 ]
 # Tests that toggle many modules at once; Grim's opinion of them isn't part of the result.
 FLAGS_IGNORED = {"selftest (every module)"}

@@ -29,8 +29,10 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -135,12 +137,32 @@ public class ElytraFly extends Module {
 	 */
 	private static final float DIVE_PITCH = 36, CLIMB_PITCH = -49, PULL_RATE = 5, EASE_RATE = 0.8f;
 	private static final double DIVE_SPEED = 52, HOLD_GAIN = 0.2, MIN_DIVE_SPEED = 36, MAX_DIVE_SPEED = 58;
+	/**
+	 * Altitude over terrain: how far ahead the ground is checked (loaded chunks' height maps, along your heading and a
+	 * few blocks to each side), and how high above the highest of it the cruise height is kept.
+	 */
+	private static final int TERRAIN_AHEAD = 160, TERRAIN_STEP = 4, TERRAIN_SIDE = 4;
+	private static final double TERRAIN_CLEARANCE = 24;
+	/** Altitude: closer than this many ticks of flight, ground up to this far below you means pull up, whatever the cycle. */
+	private static final int PULL_UP_TICKS = 60;
+	private static final double PULL_UP_MARGIN = 8;
+	/**
+	 * Altitude: the pitch it comes down at once the elytra is wearing out, and how fast that descends (blocks a second,
+	 * on the slow side). The server wears a point every second of gliding; with fewer left than the way down takes (and
+	 * a margin), it lands while it still can.
+	 */
+	private static final float LAND_PITCH = 20;
+	private static final double LAND_DESCENT = 3, LAND_MARGIN = 30;
+	/** Altitude, landing: this close above the ground it levels out, so the touchdown is gentle (and the server's fall count forgotten). */
+	private static final double FLARE_HEIGHT = 16;
 
 	private Mode activeMode = Mode.RECAST;
 	private State state = State.IDLE;
 	private Phase phase = Phase.DIVE;
 	private float climbPitch;
 	private double cruiseY = Double.NaN;
+	/** Altitude: coming down to land, the elytra being nearly worn out. */
+	private boolean landing;
 
 	private boolean wantJump, wantForward, spoofing;
 	/** Open the elytra this tick (see {@link #startGliding}); and whether jump was pressed last tick. */
@@ -195,6 +217,7 @@ public class ElytraFly extends Module {
 		state = State.IDLE;
 		phase = Phase.DIVE;
 		cruiseY = groundY = Double.NaN;
+		landing = false;
 		wantJump = wantForward = spoofing = holdGlide = flagged = forcedBlock = warned = false;
 		letGo();
 		putElytraBack();
@@ -207,7 +230,7 @@ public class ElytraFly extends Module {
 
 	@Override
 	public String hudInfo() {
-		if (activeMode == Mode.ALTITUDE) return Double.isNaN(cruiseY) ? "Altitude" : String.format("Y%.0f", cruiseY);
+		if (activeMode == Mode.ALTITUDE) return landing ? "Landing" : Double.isNaN(cruiseY) ? "Altitude" : String.format("Y%.0f", cruiseY);
 		return switch (state) {
 			case BRAKING -> "Stopping";
 			case WALKING, MINING -> "Mining";
@@ -236,6 +259,12 @@ public class ElytraFly extends Module {
 	public static float spoofPitch() {
 		ElytraFly m = Modules.get(ElytraFly.class);
 		return m == null ? 0 : m.spoofPitch;
+	}
+
+	/** Whether Recast is bouncing: it lets the glide drop and opens it again itself, every hop. */
+	public static boolean bouncing() {
+		ElytraFly m = Modules.active(ElytraFly.class);
+		return m != null && m.activeMode == Mode.RECAST && m.state != State.IDLE;
 	}
 
 	/** Whether the local player should count as gliding even though the elytra closed (it closes on every landing). */
@@ -319,13 +348,35 @@ public class ElytraFly extends Module {
 			spoofing = false;
 			phase = Phase.DIVE;
 			cruiseY = Double.NaN;
+			if (p.onGround()) landing = false;
 			// Open the elytra once you're falling: off a ledge, or on the way down from a jump.
 			if (!p.onGround() && p.getDeltaMovement().y < -0.3) startGliding();
 			return;
 		}
 		if (Double.isNaN(cruiseY)) cruiseY = p.getY();
+		if (!landing && elytraWearingOut()) {
+			landing = true;
+			warn("Elytra nearly worn out: coming down to land");
+		}
+		// Higher ground ahead raises the cruise height in time to clear it (it's never lowered again by itself).
+		Vec3 heading = Vec3.directionFromRotation(0, p.getYRot());
+		cruiseY = Math.max(cruiseY, groundAhead(heading, TERRAIN_AHEAD) + TERRAIN_CLEARANCE);
 
 		double speed = p.getDeltaMovement().length() * 20;
+		// Too close to clear by cruising: pull up and keep climbing (slowing down if it must: settling onto a slope
+		// slowly beats hitting it at full speed).
+		double near = Math.max(16, Math.sqrt(p.getDeltaMovement().horizontalDistanceSqr()) * PULL_UP_TICKS);
+		if (groundAhead(heading, near) > p.getY() - PULL_UP_MARGIN) {
+			climbPitch = CLIMB_PITCH;
+			phase = Phase.CLIMB;
+			spoof(p.getYRot(), CLIMB_PITCH);
+			return;
+		}
+		if (landing) {
+			double above = p.getY() - mc.level.getHeight(Heightmap.Types.MOTION_BLOCKING, p.getBlockX(), p.getBlockZ());
+			spoof(p.getYRot(), above > FLARE_HEIGHT ? LAND_PITCH : 0);
+			return;
+		}
 		double diveUntil = Mth.clamp(DIVE_SPEED + HOLD_GAIN * (p.getY() - cruiseY), MIN_DIVE_SPEED, MAX_DIVE_SPEED);
 		float flightPitch = switch (phase) {
 			case DIVE -> {
@@ -347,6 +398,35 @@ public class ElytraFly extends Module {
 			}
 		};
 		spoof(p.getYRot(), flightPitch);
+	}
+
+	/**
+	 * Whether the worn elytra has fewer uses left than gliding down from here takes (a point a second while the server
+	 * glides you), with a margin. No Durability keeps it from wearing, but only while it can swap.
+	 */
+	private boolean elytraWearingOut() {
+		var p = mc.player;
+		ItemStack chest = p.getItemBySlot(EquipmentSlot.CHEST);
+		if (!ItemInfo.isGlider(chest) || !chest.isDamageableItem()) return false;
+		double above = p.getY() - mc.level.getHeight(Heightmap.Types.MOTION_BLOCKING, p.getBlockX(), p.getBlockZ());
+		return ItemInfo.durability(chest) < above / LAND_DESCENT + LAND_MARGIN;
+	}
+
+	/**
+	 * The highest ground (any block that stops movement, trees and water included) within {@code distance} blocks
+	 * along {@code heading}, and {@link #TERRAIN_SIDE} to each side; only chunks that have loaded count.
+	 */
+	private double groundAhead(Vec3 heading, double distance) {
+		var p = mc.player;
+		double best = Double.NEGATIVE_INFINITY;
+		for (double d = 0; d <= distance; d += TERRAIN_STEP) {
+			for (int side = -TERRAIN_SIDE; side <= TERRAIN_SIDE; side += TERRAIN_SIDE) {
+				int x = Mth.floor(p.getX() + heading.x * d - heading.z * side), z = Mth.floor(p.getZ() + heading.z * d + heading.x * side);
+				if (!mc.level.hasChunk(x >> 4, z >> 4)) continue;
+				best = Math.max(best, mc.level.getHeight(Heightmap.Types.MOTION_BLOCKING, x, z));
+			}
+		}
+		return best;
 	}
 
 	// ---- Recast ---------------------------------------------------------------------------------------------------

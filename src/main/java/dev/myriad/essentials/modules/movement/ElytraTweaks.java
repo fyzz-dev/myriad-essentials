@@ -100,8 +100,13 @@ public class ElytraTweaks extends Module {
 	private static final int FORGET_TICKS = 30;
 
 	private boolean swapping, startNow, rocketWanted, firing, warned;
-	/** Stopping, but the glide can't start again yet (not two starts in a row): it does next tick. */
+	/**
+	 * Stopping in mid-air: the elytra is back on, and the glide starts again once the server's stop for the last swap
+	 * is in (held meanwhile, so you keep gliding) and not straight after the last start; {@link #finishWait} counts the
+	 * ticks spent waiting for it.
+	 */
 	private boolean finishing;
+	private int finishWait;
 	/** How far you've come down, as the server counts it, since you last rose; and ticks of gliding since swapping. */
 	private double descent;
 	private int glidingTicks;
@@ -169,6 +174,7 @@ public class ElytraTweaks extends Module {
 		if (settleTicks > 0) settleTicks--;
 		// Rocket Boost: every movement packet carries a rotation while a rocket pushes, so Grim's look before is known.
 		if (rocketBoost.get() && p.isFallFlying() && rocketAttached(p)) Myriad.rotations().sendRotationThisTick();
+		catchGlide(p);
 		tickNoDurability();
 	}
 
@@ -204,7 +210,7 @@ public class ElytraTweaks extends Module {
 		}
 		sinceStart++;
 		if (finishing) {
-			if (sinceStart >= 2 || !p.isFallFlying() || p.onGround()) finish();
+			finish();
 			return;
 		}
 		// Landing, water, or the ground (below or ahead) close enough that the server could see you land without the
@@ -248,22 +254,28 @@ public class ElytraTweaks extends Module {
 	}
 
 	/**
-	 * Stops swapping, with the elytra back on, gliding again if the server had stopped and you're still in the air (a
-	 * tick later if it only just started, unless {@code now}: never by dropping out of the glide in mid-air, which
-	 * would land you with every block fallen since the server last glided).
+	 * Stops swapping, with the elytra back on and gliding again if the server stopped the glide. Never by dropping out of
+	 * the glide in mid-air, which would land you with every block fallen since the server last glided: in the air it
+	 * waits (unless {@code now}) for the server's stop for the last swap, which may still be on its way, and starts the
+	 * glide again once it's in; it lets go without a start if none comes within a round trip (the elytra was back on in
+	 * time, so the server never stopped).
 	 */
 	private void finish(boolean now) {
 		if (!swapping) return;
 		LocalPlayer p = mc.player;
+		boolean inAir = p.isFallFlying() && !p.onGround() && !p.isInWater();
 		boolean cleared = GlideHold.cleared(this);
-		boolean restart = cleared && p.isFallFlying() && !p.onGround();
-		if (restart && sinceStart < 2 && !now) {
-			finishing = true;
-			return;
+		if (inAir && !now && (!cleared || sinceStart < 2)) {
+			if (!finishing) {
+				finishing = true;
+				finishWait = 0;
+				ChestSwap.restoreElytra();
+			}
+			if (cleared || ++finishWait <= roundTripTicks() + 4) return;
 		}
 		swapping = finishing = false;
 		armTicks = 0;
-		if (restart) {
+		if (inAir && cleared) {
 			restart(false);
 		} else {
 			GlideHold.release(this);
@@ -275,11 +287,58 @@ public class ElytraTweaks extends Module {
 		rocketWanted = stopForUse = false;
 	}
 
-	/** While swapping: jump only as the press that starts the glide again (released the tick before). */
+	/** Ticks for a packet to reach the server and its answer to come back, with a little slack. */
+	private static int roundTripTicks() {
+		return Mth.clamp(Myriad.server().ping() / 50 + 2, 2, 12);
+	}
+
+	/** While swapping: jump only as the press that starts the glide again (released the tick before). Same for a catch. */
 	@Subscribe(priority = Priority.LOWEST)
 	private void onInput(InputEvent e) {
-		if (swapping || startNow) e.jump = startNow;
+		if (catching > 0) e.jump = catchNow;
+		else if (swapping || startNow) e.jump = startNow;
 	}
+
+	// ---- catching a dropped glide -----------------------------------------------------------------------------------
+
+	/** How long to keep trying to open the elytra again after the glide drops in mid-air. */
+	private static final int CATCH_TICKS = 20;
+
+	private boolean wasGliding, catchNow;
+	/** Ticks left to catch a dropped glide (0: nothing to catch). */
+	private int catching;
+
+	/**
+	 * A safety net: the glide stopping in mid-air with nothing a player would stop it for (no ground, water, ladder or
+	 * vehicle) means the server's stop got through to the client (a setback, a lost hold, chunks that came in late), and
+	 * a fall from there could cost every block the server counted while it wasn't gliding you. So the elytra is opened
+	 * again at once, as a player would: on if a chestplate is worn, then jump released for a tick and pressed.
+	 */
+	private void catchGlide(LocalPlayer p) {
+		boolean gliding = p.isFallFlying();
+		boolean free = !p.onGround() && !p.isInWater() && !p.isPassenger() && !p.onClimbable() && !p.getAbilities().flying;
+		if (wasGliding && !gliding && free && !ElytraFly.bouncing()) {
+			catching = CATCH_TICKS;
+			info("Glide dropped in mid-air: opening the elytra again");
+		}
+		wasGliding = gliding;
+		catchNow = false;
+		if (catching == 0) return;
+		if (gliding || !free) {
+			catching = 0;
+			return;
+		}
+		catching--;
+		if (!ChestSwap.elytraWorn()) {
+			ChestSwap.restoreElytra();
+			return;
+		}
+		// Released last tick (the press opens it, as vanilla does), pressed this one.
+		catchNow = !lastCatchPress;
+		lastCatchPress = catchNow;
+	}
+
+	private boolean lastCatchPress;
 
 	/**
 	 * A rocket used meanwhile waits for the next start: the server only attaches rockets while it sees you gliding.
@@ -330,7 +389,7 @@ public class ElytraTweaks extends Module {
 	 */
 	private void trackDescent(LocalPlayer p) {
 		double dy = p.getY() - p.yo;
-		if (dy > 0 || p.onGround() || p.isInWater() || !p.isFallFlying()) descent = 0;
+		if (dy > 0 || p.onGround() || p.isInWater()) descent = 0;
 		else descent -= dy;
 		glidingTicks = swapping ? 0 : glidingTicks + 1;
 		if (!swapping && glidingTicks >= FORGET_TICKS && p.getDeltaMovement().y > -0.5) descent = 0;
@@ -345,11 +404,17 @@ public class ElytraTweaks extends Module {
 	private boolean room(boolean arming) {
 		LocalPlayer p = mc.player;
 		Vec3 v = p.getDeltaMovement();
-		int roundTrip = Mth.clamp(Myriad.server().ping() / 50 + 2, 2, 12);
-		// Once the server counts a fall that would hurt, it needs time to forget it too before you touch anything.
-		double ticks = roundTrip + 4 + (arming ? 2 : 0) + (descent > SAFE_DESCENT ? FORGET_TICKS : 0);
+		int roundTrip = roundTripTicks();
+		// Once the server counts a fall that would hurt, it needs time to forget it before you touch anything: for the
+		// last swap's stop to come in, the glide to start again, and the server to glide a while.
+		double ticks = roundTrip + 4 + (arming ? 2 : 0) + (descent > SAFE_DESCENT ? roundTrip + FORGET_TICKS : 0);
 		double need = 6 + (v.y < 0 ? -v.y * ticks : v.y * (roundTrip / 2.0 + 2)) + (arming ? 2 : 0);
 		AABB box = p.getBoundingBox();
+		// Chunks you'd reach that haven't come in: the client stops you there until they do, which shouldn't happen
+		// while the server isn't gliding you.
+		for (double t = 0; t <= ticks; t += 4) {
+			if (!mc.level.hasChunk(Mth.floor(p.getX() + v.x * t) >> 4, Mth.floor(p.getZ() + v.z * t) >> 4)) return false;
+		}
 		if (!mc.level.noBlockCollision(p, box.expandTowards(0, -need, 0))) return false;
 		// Along the way: the whole hitbox swept to where you'll be, and a couple of blocks under that path.
 		return mc.level.noBlockCollision(p, box.expandTowards(v.x * ticks, Math.min(0, v.y * ticks) - 2, v.z * ticks));

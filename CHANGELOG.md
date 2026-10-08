@@ -31,6 +31,24 @@ Needs Myriad 0.2.3.
   to put the elytra back on in time; the landing test now touches down at full health. Swaps also stop for rising
   ground, walls and trees ahead, not only for the ground straight below, and stopping never drops you out of the
   glide in mid-air (it waits the one tick until the glide can start again). New suite test: a No Durability landing.
+- Elytra flight can be left alone (tested at 2b2t-like ping, 100 ms each way, on the Grim test server):
+  - Altitude no longer gets set back every round trip after a single setback (with Myriad 0.2.4, which sends the held
+    pitch again after one); 300 ticks at that ping, no flags.
+  - No Durability, stopping in mid-air, waits for the server's stop for the last swap (still on its way at that
+    ping) and starts the glide again, instead of letting that stop drop you out of the glide 15 blocks up with the
+    whole fall still counted: the landing test went from 3 deaths in 3 to 14 safe landings in 15 (the one death
+    was in a run of the old test, which put you above its floor before building it). It also stops
+    swapping before chunks you'd fly into have loaded.
+  - Elytra Tweaks catches a glide that drops in mid-air for any other reason (no ground, water, ladder or vehicle):
+    it opens the elytra again at once, as a player would, and says so in chat.
+  - Altitude watches the ground ahead (160 blocks, from loaded chunks) and raises its cruise height to stay 24 blocks
+    above it; ground closer than it can clear that way makes it pull up and keep climbing, so a cliff it can't get
+    over ends in a slow stall against it rather than a crash at full speed.
+  - Altitude lands while the elytra can still take it: once it has fewer uses left than the way down takes (at a
+    conservative 3 blocks a second, plus 30), it comes down at 20° and levels out near the ground. From 225 blocks
+    up with 102 uses left it landed unhurt with 50 to spare.
+  - Two more suite tests (a No Durability landing, an elytra wearing out in Altitude); the landing test now fails if
+    you died and respawned.
 - Full Bright works with shader packs in Gamma mode too: packs light the world themselves and ignored the brightened
   lightmap, so caves stayed dark. They're now told you have night vision, which they brighten by, without a real
   effect on you; vanilla's look is unchanged.
