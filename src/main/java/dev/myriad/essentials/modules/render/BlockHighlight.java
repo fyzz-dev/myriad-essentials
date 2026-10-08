@@ -48,7 +48,9 @@ public class BlockHighlight extends Module {
 	private void onHighlight(HighlightEvent.Shapes e) {
 		if (mode.get() != Mode.OUTLINE) return;
 		BlockPos pos = target();
-		if (pos != null) e.block(pos, outline.style(), color.argb());
+		// Grown a hair, so it's in front of other highlights of the same block (Storage's chest) rather than
+		// flickering against them where their faces meet.
+		if (pos != null) e.block(pos, outline.style(), color.argb(), 0.002);
 	}
 
 	@Subscribe(inGame = true)

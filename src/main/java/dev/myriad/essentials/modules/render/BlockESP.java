@@ -47,7 +47,8 @@ public class BlockESP extends Module {
 	/** Past this many in one chunk the rest are skipped, so picking something common can't swamp the renderer. */
 	private static final int MAX_PER_CHUNK = 2048;
 
-	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.BOXES).description("Boxes: 3D boxes. Outline: a shader outline around each block's shape.").build();
+	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.BOXES).description("Boxes: 3D boxes. Outline: a shader outline around each block's shape.")
+		.onChanged(m -> found().setMeshesVisible(m == Mode.BOXES)).build();
 	private final RegistryListSetting<Block> blocks = sgGeneral.blocks("Blocks").description("The blocks to highlight.")
 		.defaultValue(Blocks.SPAWNER, Blocks.TRIAL_SPAWNER).build();
 	private final IntSetting range = sgGeneral.intSetting("Range").description("Chunks around you.").defaultValue(8).range(1, 32).build();
@@ -59,6 +60,12 @@ public class BlockESP extends Module {
 	private final BoxStyle style = new BoxStyle(sgGeneral, () -> mode.get() == Mode.BOXES);
 	private final HighlightSettings outline = new HighlightSettings(settings.group("Outline"), () -> mode.get() == Mode.OUTLINE);
 
+	/**
+	 * Outline mode's colours: each chunk mesh's faces pick theirs from here by index, so one list serves every chunk.
+	 * Rebuilt with the meshes; with Block Colors off it's just the one colour, read fresh each frame.
+	 */
+	private final it.unimi.dsi.fastutil.ints.IntArrayList palette = new it.unimi.dsi.fastutil.ints.IntArrayList();
+
 	private final ChunkCache<List<BlockPos>> found = ChunkCache.of(this, this::scan)
 		.range(range::get)
 		.mesh(this::mesh)
@@ -69,9 +76,19 @@ public class BlockESP extends Module {
 		super(Categories.RENDER, "Blocks", "Highlights the blocks you pick, like spawners or beds, through walls.");
 		// A different list needs a new search; anything else only re-meshes.
 		settings.onAnyChanged(s -> {
+			palette.clear();
 			if (s == blocks) found.invalidateAll();
 			else found.remeshAll();
 		});
+	}
+
+	private ChunkCache<List<BlockPos>> found() {
+		return found;
+	}
+
+	@Override
+	protected void onEnable() {
+		found.setMeshesVisible(mode.get() == Mode.BOXES);
 	}
 
 	@Override
@@ -92,7 +109,11 @@ public class BlockESP extends Module {
 	}
 
 	private void mesh(List<BlockPos> list, MeshBuilder mesh) {
-		if (mode.get() == Mode.OUTLINE) return;
+		if (mode.get() == Mode.OUTLINE) {
+			// The silhouette only: merged faces, so a solid mass keeps just its outside, each in its palette colour.
+			MergedBoxes.draw(mesh, list, lookup, g -> HighlightEvent.Shapes.paletteColor(paletteIndex(g)), g -> 0, true);
+			return;
+		}
 		mesh.lineWidth(style.lineWidth.getFloat());
 		if (merge.get()) {
 			boolean lines = style.shape.get() != Renderer3D.ShapeMode.FILL, fills = style.shape.get() != Renderer3D.ShapeMode.LINES;
@@ -125,20 +146,30 @@ public class BlockESP extends Module {
 
 	private int colorOf(BlockState state, BlockPos pos) {
 		if (blockColors.get()) {
-			MapColor map = state.getMapColor(mc.level, pos);
+			// One colour per block, from its default state: some blocks' map colour depends on the state (a bed's head is
+			// wool-white, its foot the dye; a log's end differs from its bark), which would split one bed into two shapes.
+			MapColor map = state.getBlock().defaultBlockState().getMapColor(mc.level, pos);
 			if (map != MapColor.NONE) return 0xFF000000 | map.col;
 		}
 		return color.argb();
 	}
 
-	/** Outline mode: every block found (those off screen are skipped by the renderer). */
+	/** A colour's place in {@link #palette}. With Block Colors off every block uses the one colour, index 0. */
+	private int paletteIndex(int color) {
+		if (!blockColors.get()) return 0;
+		int i = palette.indexOf(color);
+		if (i >= 0) return i;
+		if (palette.size() >= 256) return 0;
+		palette.add(color);
+		return palette.size() - 1;
+	}
+
+	/** Outline mode: every chunk's mesh, kept on the GPU (chunks off screen are skipped by the renderer). */
 	@Subscribe(inGame = true)
 	private void onHighlight(HighlightEvent.Shapes e) {
 		if (mode.get() != Mode.OUTLINE) return;
-		HighlightStyle look = outline.style();
-		found.forEach(list -> {
-			for (BlockPos pos : list) e.block(pos, look, colorOf(mc.level.getBlockState(pos), pos));
-		});
+		int[] colors = blockColors.get() ? palette.toIntArray() : new int[]{color.argb()};
+		if (colors.length > 0) found.highlight(e, outline.style(), colors);
 	}
 
 	@Subscribe

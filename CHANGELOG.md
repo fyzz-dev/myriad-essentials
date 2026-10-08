@@ -3,6 +3,19 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.3
+
+Needs Myriad 0.2.3.
+
+- Blocks' Outline mode keeps its silhouettes on the GPU per chunk (only the outside faces of each clump), so even a
+  very common block costs nothing per frame. Before, every block was sent again each frame, and picking stone dropped
+  the frame rate badly.
+- Blocks' Block Colors gives each block one colour (its default look's): a bed's head and foot (white and the dye on
+  a map) or a log's end and bark no longer split into separately outlined shapes.
+- Block Highlight no longer flickers against Storage's or Blocks' highlight of the same block (an opening chest).
+- ESP's outlines show over Storage's and Blocks' (core draws entities above shapes), so players behind a highlighted
+  chest wall stay visible.
+
 ## 0.2.2
 
 Needs Myriad 0.2.2.
