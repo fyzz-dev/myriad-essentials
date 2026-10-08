@@ -33,9 +33,11 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * Leaves the server before you die: at low health, after too many totem pops or with too few totems left, when your
- * armour is about to break, a fall would kill you or you drop into the void, when a player you haven't friended or an
- * entity you picked comes close, or when a bed, respawn anchor, end crystal or creeper nearby could kill you. The
- * disconnect screen says why. Singleplayer is left alone.
+ * armour is about to break, when a player you haven't friended or an entity you picked comes close, or when a bed,
+ * respawn anchor, end crystal or creeper nearby could kill you. The disconnect screen says why. Singleplayer is left
+ * alone.
+ * <p>
+ * Falls aren't among the reasons: the server keeps you where you were, falling, and you'd land as you rejoined.
  * <p>
  * Afterwards it either turns itself off, or stays on and waits for the reason it left to clear before that reason can
  * trigger again, so you can rejoin (say with no totems left) without leaving again straight away.
@@ -63,8 +65,6 @@ public class AutoDisconnect extends Module {
 	private final BoolSetting crystals = sgDanger.bool("Crystals").description("Leave when end crystals nearby could kill you.").build();
 	private final BoolSetting creepers = sgDanger.bool("Creepers").description("Leave when a creeper comes close.").build();
 	private final DoubleSetting creeperRange = sgDanger.doubleSetting("Creeper Range").defaultValue(5).range(1, 16).decimals(1).visible(creepers::get).build();
-	private final BoolSetting falls = sgDanger.bool("Falls").description("Leave when the fall you're in would kill you.").build();
-	private final BoolSetting voidFall = sgDanger.bool("Void").description("Leave when you fall below the bottom of the world.").defaultValue(true).build();
 	private final RegistryListSetting<EntityType<?>> entities = sgDanger.entityTypes("Entities").description("Leave when one of these comes close (TNT minecarts, withers...).").build();
 	private final DoubleSetting entityRange = sgDanger.doubleSetting("Entity Range").defaultValue(10).range(1, 64).decimals(0).visible(() -> !entities.get().isEmpty()).build();
 
@@ -101,8 +101,6 @@ public class AutoDisconnect extends Module {
 			var near = mc.level.getEntitiesOfClass(Creeper.class, mc.player.getBoundingBox().inflate(creeperRange.get()));
 			return near.isEmpty() ? null : "a creeper " + Math.round(mc.player.distanceTo(near.getFirst())) + " blocks away";
 		});
-		trigger("falls", falls::get, () -> Threats.fall() >= Threats.health() ? "a fall would kill you" : null);
-		trigger("void", voidFall::get, () -> mc.player.getY() < mc.level.getMinY() ? "falling into the void" : null);
 		trigger("entities", () -> !entities.get().isEmpty(), this::nearbyEntity);
 	}
 
@@ -110,10 +108,10 @@ public class AutoDisconnect extends Module {
 		triggers.put(key, new Trigger(enabled, check));
 	}
 
-	/** Version 2 replaced the Auto Disable toggle with After Leaving. */
+	/** Version 2 replaced the Auto Disable toggle with After Leaving; version 3 dropped Falls and Void. */
 	@Override
 	public int settingsVersion() {
-		return 2;
+		return 3;
 	}
 
 	@Override
@@ -124,6 +122,10 @@ public class AutoDisconnect extends Module {
 				if (!v.getAsBoolean()) saved.set("General", "After Leaving", new JsonPrimitive("WAIT_FOR_CLEAR"));
 			});
 			saved.remove("General", "Auto Disable");
+		}
+		if (fromVersion <= 2) {
+			saved.remove("Danger", "Falls");
+			saved.remove("Danger", "Void");
 		}
 	}
 

@@ -292,7 +292,7 @@ def t_auto_disconnect():
     # Leaves on a hit below the health threshold, and next to a charged respawn anchor that could kill you (its blast
     # reaches you once the anchor's gone, which the danger maths has to know); rejoins after each.
     reset()
-    ads = [f".set auto_disconnect {t} false" for t in ("totem_pops", "totems_left", "armor", "players", "beds", "crystals", "creepers", "falls", "void")]
+    ads = [f".set auto_disconnect {t} false" for t in ("totem_pops", "totems_left", "armor", "players", "beds", "crystals", "creepers")]
     client(*ads, ".set auto_disconnect health true", ".set auto_disconnect threshold 6", ".set auto_disconnect anchors false",
         ".set auto_disconnect after_leaving turn_off", ".toggle auto_disconnect on", "wait 10")
     cmd(f"damage {P} 15")

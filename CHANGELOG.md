@@ -3,6 +3,16 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.8
+
+Needs Myriad 0.2.6.
+
+- Auto Disconnect: Beds and Anchors leave when one could kill you (with Myriad 0.2.6, which counts the exploding block
+  as gone: before, its own block shielded you in the maths and they never left). Falls and Void are gone: the server
+  keeps you where you were, falling, so you landed as you rejoined (on the Grim test server it left 25 blocks into a
+  fall, and the rejoin died two seconds later).
+- Grim suite: an Auto Disconnect test (low health, a charged anchor, rejoining after each).
+
 ## 0.2.7
 
 Needs Myriad 0.2.5.
