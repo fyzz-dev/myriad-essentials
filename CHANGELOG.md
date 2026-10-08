@@ -3,6 +3,13 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.2
+
+Needs Myriad 0.2.2.
+
+- Block Highlight is always its own outline around just the block you're looking at (half a double chest, one end of a
+  bed), drawn over Blocks' and Storage's highlights. Before, it merged with them where they touched and lost that edge.
+
 ## 0.2.1
 
 Needs Myriad 0.2.1.

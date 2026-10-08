@@ -1,5 +1,6 @@
 package dev.myriad.essentials.modules.render;
 
+import dev.myriad.api.event.Priority;
 import dev.myriad.api.event.Subscribe;
 import dev.myriad.api.event.events.HighlightEvent;
 import dev.myriad.api.event.events.Render3DEvent;
@@ -17,7 +18,8 @@ import net.minecraft.world.phys.HitResult;
 
 /**
  * Replaces vanilla's thin black outline around the block you're looking at: a shader outline (with glow, a solid or
- * dotted fill and a gradient, like ESP's) or a box, either following the block's real shape.
+ * dotted fill and a gradient, like ESP's) or a box, either following the block's real shape. Always just the one block
+ * (half a double chest, one end of a bed), outlined on its own even where Blocks or Storage highlight its neighbours.
  */
 public class BlockHighlight extends Module {
 	public enum Mode {
@@ -41,7 +43,8 @@ public class BlockHighlight extends Module {
 		return mc.level.getBlockState(hit.getBlockPos()).isAir() ? null : hit.getBlockPos();
 	}
 
-	@Subscribe(inGame = true)
+	/** Low priority: after other modules' highlights, so this one is always its own outline, drawn over theirs. */
+	@Subscribe(inGame = true, priority = Priority.LOW)
 	private void onHighlight(HighlightEvent.Shapes e) {
 		if (mode.get() != Mode.OUTLINE) return;
 		BlockPos pos = target();
