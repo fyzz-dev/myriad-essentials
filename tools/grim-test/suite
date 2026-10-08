@@ -265,6 +265,49 @@ def t_elytra_wearing_out():
     return hp >= 20 and x > 7000, f"landed at y={y:.0f} after {x - 7000:.0f} blocks, health {hp:.0f}, elytra damage {wear.group(1) if wear else '?'} of 432"
 
 
+def online():
+    return P in cmd("list")
+
+
+def rejoin():
+    client("connect localhost:25565", timeout=10)
+    for _ in range(60):
+        if online():
+            time.sleep(3)
+            return True
+        time.sleep(1)
+    return False
+
+
+def leaves_within(seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if not online():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def t_auto_disconnect():
+    # Leaves on a hit below the health threshold, and next to a charged respawn anchor that could kill you (its blast
+    # reaches you once the anchor's gone, which the danger maths has to know); rejoins after each.
+    reset()
+    ads = [f".set auto_disconnect {t} false" for t in ("totem_pops", "totems_left", "armor", "players", "beds", "crystals", "creepers", "falls", "void")]
+    client(*ads, ".set auto_disconnect health true", ".set auto_disconnect threshold 6", ".set auto_disconnect anchors false",
+        ".set auto_disconnect after_leaving turn_off", ".toggle auto_disconnect on", "wait 10")
+    cmd(f"damage {P} 15")
+    hurt = leaves_within(3)
+    if not rejoin(): return False, "couldn't rejoin"
+    reset()
+    cmd("setblock 1003 100 0 respawn_anchor[charges=4]")
+    client(".set auto_disconnect health false", ".set auto_disconnect anchors true", ".toggle auto_disconnect on", "wait 10")
+    anchor = leaves_within(3)
+    if not rejoin(): return False, "couldn't rejoin"
+    cmd("setblock 1003 100 0 air")
+    client(".set auto_disconnect health true", ".toggle auto_disconnect off")
+    return hurt and anchor, f"left at low health: {hurt}, left next to a charged anchor: {anchor}"
+
+
 TESTS = [
     ("anticheat detects Grim", t_anticheat),
     ("selftest (every module)", t_selftest),
@@ -275,6 +318,7 @@ TESTS = [
     ("offhand", t_offhand),
     ("auto_armor", t_auto_armor),
     ("auto_eat", t_auto_eat),
+    ("auto_disconnect", t_auto_disconnect),
     ("stack_replenish", t_stack_replenish),
     ("elytra_fly altitude", t_elytra_altitude),
     ("elytra_fly recast", t_elytra_recast),
