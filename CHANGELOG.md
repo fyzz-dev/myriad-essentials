@@ -3,6 +3,13 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.5
+
+Needs Myriad 0.2.3.
+
+- Free Look's scroll distance works next to Boze, which sets the third-person camera's distance itself and used to
+  keep it at 4 blocks.
+
 ## 0.2.4
 
 Needs Myriad 0.2.3.

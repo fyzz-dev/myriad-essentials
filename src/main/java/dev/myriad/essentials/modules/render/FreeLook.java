@@ -86,13 +86,15 @@ public class FreeLook extends Module {
 		e.y = Mth.lerp(e.tickDelta(), mc.player.yo, mc.player.getY()) + mc.player.getBbHeight() * 0.5;
 	}
 
-	/**
-	 * How far the third-person camera backs off ({@code vanilla} while this is off). Vanilla still shortens it where a
-	 * block is in the way.
-	 */
-	public static float distance(float vanilla) {
+	/** Whether the third-person camera's distance is this module's (see {@link #distance()}). */
+	public static boolean active() {
 		FreeLook m = Modules.get(FreeLook.class);
-		if (m == null || !m.isEnabled()) return vanilla;
+		return m != null && m.isEnabled();
+	}
+
+	/** How far the third-person camera backs off while {@link #active()}. Vanilla still shortens it where a block is in the way. */
+	public static float distance() {
+		FreeLook m = Modules.get(FreeLook.class);
 		long now = System.nanoTime();
 		float seconds = Math.min(0.1f, (now - m.lastFrameNanos) / 1e9f);
 		m.lastFrameNanos = now;
