@@ -34,6 +34,7 @@ import dev.myriad.essentials.modules.player.StackReplenish;
 import dev.myriad.essentials.modules.player.WallInteract;
 import dev.myriad.essentials.modules.player.XCarry;
 import dev.myriad.essentials.modules.render.BlockESP;
+import dev.myriad.essentials.modules.render.BlockHighlight;
 import dev.myriad.essentials.modules.render.ESP;
 import dev.myriad.essentials.modules.render.FreeLook;
 import dev.myriad.essentials.modules.render.Freecam;
@@ -67,7 +68,7 @@ public final class Essentials implements MyriadAddon {
 			// Player
 			new AutoEat(), new AutoTool(), new InventoryTweaks(), new MiddleClick(), new PacketMine(), new Reach(), new StackReplenish(), new WallInteract(), new XCarry(),
 			// Render
-			new ESP(), new BlockESP(), new Storage(), new Tracers(), new Nametags(), new NoRender(), new Tooltips(), new FullBright(), new FreeLook(), new Freecam(),
+			new ESP(), new BlockESP(), new BlockHighlight(), new Storage(), new Tracers(), new Nametags(), new NoRender(), new Tooltips(), new FullBright(), new FreeLook(), new Freecam(),
 			new ViewModel(), new Zoom(),
 			// World
 			new AirPlace(), new Scaffold()

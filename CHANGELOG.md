@@ -3,6 +3,16 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.1
+
+Needs Myriad 0.2.1.
+
+- Blocks has a Mode: Boxes (as before) or Outline, the shader outline ESP and Storage have, around each block's
+  shape; touching blocks share one outline, so a vein or a portal is one shape.
+- Block Highlight (Render): your own look for the block you're looking at, in place of vanilla's thin black outline.
+  Outline (the shader outline, with glow, fill and gradient) or Box (fill, lines or both), following the block's real
+  shape, and only where it's visible unless you turn on Through Walls.
+
 ## 0.2.0
 
 Needs Myriad 0.2.0 (highlights).
