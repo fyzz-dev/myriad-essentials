@@ -3,6 +3,14 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.4
+
+Needs Myriad 0.2.3.
+
+- Free Look: the scroll wheel moves the camera nearer or further (1 to 30 blocks, easing between steps; it starts at
+  vanilla's 4 each time), and the camera orbits the middle of your player instead of its eyes. Blocks still pull the
+  camera in so it never ends up inside a wall.
+
 ## 0.2.3
 
 Needs Myriad 0.2.3.
