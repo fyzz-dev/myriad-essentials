@@ -1,18 +1,21 @@
 package dev.myriad.essentials.modules.render;
 
 import dev.myriad.api.event.Subscribe;
+import dev.myriad.api.event.events.HighlightEvent;
 import dev.myriad.api.event.events.PacketEvent;
 import dev.myriad.api.event.events.Render3DEvent;
 import dev.myriad.api.event.events.TickEvent;
 import dev.myriad.api.event.events.WorldEvent;
 import dev.myriad.api.module.Categories;
 import dev.myriad.api.module.Module;
+import dev.myriad.api.render.HighlightSettings;
 import dev.myriad.api.render.MergedBoxes;
 import dev.myriad.api.render.MeshBuilder;
 import dev.myriad.api.render.Renderer3D;
 import dev.myriad.api.render.ShapeBuilder;
 import dev.myriad.api.setting.BoolSetting;
 import dev.myriad.api.setting.ColorSetting;
+import dev.myriad.api.setting.EnumSetting;
 import dev.myriad.api.setting.IntSetting;
 import dev.myriad.api.setting.SettingColor;
 import dev.myriad.api.setting.SettingGroup;
@@ -71,12 +74,18 @@ import java.util.function.BiConsumer;
  * <li>Lids: a chest or shulker box that opens is drawn as it animates, lid and all, then goes back to its box.</li>
  * <li>Merge: touching containers of the same colour are drawn as one shape that fits their hitboxes, so a wall of
  * chests is one outline; a chest opening in it keeps its body in the shape and only the lid moves.</li>
+ * <li>Outline mode: a shader outline (glow, solid or dotted fill, gradient) instead of boxes; touching containers
+ * always share one outline, and storage entities are outlined by their exact shape.</li>
  * </ul>
  * Blocks are found per chunk with a {@link ChunkCache} (scanned when a chunk loads and again only when a block in it
  * changes) and their boxes stay on the GPU, so settings only re-mesh. Only containers whose lids are moving, and
  * entities, are drawn each frame. Tracers can also draw lines to everything this shows.
  */
 public class Storage extends Module {
+	public enum Mode {
+		BOXES, OUTLINE
+	}
+
 	/** Chest model, in sixteenths of a block: the body is 10 tall, the lid sits from 9 to 14 and hinges at the back. */
 	private static final double BODY_TOP = 10 / 16.0, LID_BOTTOM = 9 / 16.0, LID_HEIGHT = 5 / 16.0;
 	/** Shulker box model: the base is the back half; the lid, 12/16 deep from 4/16, rises half a block and twists 270°. */
@@ -87,8 +96,11 @@ public class Storage extends Module {
 	private final IntSetting range = sgGeneral.intSetting("Range").description("Chunks around you.").defaultValue(8).range(1, 32).build();
 	private final BoolSetting tracers = sgGeneral.bool("Tracers").description("A line from the crosshair to each one.").build();
 	private final BoolSetting lids = sgGeneral.bool("Lids").description("Follow chest and shulker box lids as they open.").defaultValue(true).build();
-	private final BoolSetting merge = sgGeneral.bool("Merge").description("Draw touching containers of the same colour as one outline.").build();
-	private final BoxStyle style = new BoxStyle(sgGeneral);
+	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.BOXES).description("Boxes: 3D boxes. Outline: a shader outline around each container.").build();
+	private final BoolSetting merge = sgGeneral.bool("Merge").description("Draw touching containers of the same colour as one outline.")
+		.visible(() -> mode.get() == Mode.BOXES).build();
+	private final BoxStyle style = new BoxStyle(sgGeneral, () -> mode.get() == Mode.BOXES);
+	private final HighlightSettings outline = new HighlightSettings(settings.group("Outline"), () -> mode.get() == Mode.OUTLINE);
 
 	private final SettingGroup sgBlocks = settings.group("Blocks");
 	private final Kind chests = kind(sgBlocks, "Chests", true, SettingColor.Mode.YELLOW);
@@ -191,6 +203,7 @@ public class Storage extends Module {
 	}
 
 	private void mesh(List<Found> list, MeshBuilder mesh) {
+		if (mode.get() == Mode.OUTLINE) return;
 		mesh.lineWidth(style.lineWidth.getFloat());
 		if (merge.get()) {
 			List<BlockPos> cells = new ArrayList<>();
@@ -448,13 +461,34 @@ public class Storage extends Module {
 
 	// ---- per frame --------------------------------------------------------------------------------------------------
 
+	/** Outline mode: every container shown (the shapes off screen are skipped by the renderer). */
+	@Subscribe(inGame = true)
+	private void onHighlightShapes(HighlightEvent.Shapes e) {
+		if (mode.get() != Mode.OUTLINE) return;
+		var style = outline.style();
+		found.forEach(list -> {
+			for (Found f : list) if (f.kind.enabled.get()) e.box(f.box, style, color(f));
+		});
+	}
+
+	/** Outline mode: storage entities (chest minecarts and boats, pack animals) by their exact shape. */
+	@Subscribe(inGame = true)
+	private void onHighlightEntity(HighlightEvent.Entity e) {
+		if (mode.get() != Mode.OUTLINE) return;
+		Kind k = kindOf(e.entity());
+		if (k != null && k.enabled.get()) e.highlight(outline.style(), k.color.argb());
+	}
+
 	@Subscribe(inGame = true)
 	private void onRender3D(Render3DEvent e) {
 		ShapeBuilder shapes = e.shapes();
-		for (BlockPos pos : animating.keySet()) {
-			List<Found> list = found.get(pos);
-			if (list == null) continue;
-			for (Found f : list) if (f.pos.equals(pos) && f.kind.enabled.get()) drawLive(shapes, f, e.tickDelta());
+		boolean boxes = mode.get() == Mode.BOXES;
+		if (boxes) {
+			for (BlockPos pos : animating.keySet()) {
+				List<Found> list = found.get(pos);
+				if (list == null) continue;
+				for (Found f : list) if (f.pos.equals(pos) && f.kind.enabled.get()) drawLive(shapes, f, e.tickDelta());
+			}
 		}
 		if (tracers.get()) {
 			found.forEach(list -> {
@@ -465,7 +499,7 @@ public class Storage extends Module {
 			Kind k = kindOf(entity);
 			if (k == null || !k.enabled.get()) continue;
 			AABB box = Entities.lerpedBox(entity, e.tickDelta());
-			style.draw(shapes, box, k.color.argb(), 1);
+			if (boxes) style.draw(shapes, box, k.color.argb(), 1);
 			if (tracers.get()) Renderer3D.tracer(box.getCenter(), k.color.argb());
 		}
 	}

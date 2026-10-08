@@ -3,6 +3,18 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.0
+
+Needs Myriad 0.2.0 (highlights).
+
+- ESP has an Outline mode: a shader outline around each entity's exact shape (armour and held items included), with
+  Glow, Fill (none, solid or a dot grid), Gradient and Through Walls. Box options are hidden in that mode.
+- Storage has a Mode: Boxes (as before) or Outline, the same shader outline around every container shown; touching
+  containers share one outline, and chest minecarts, chest boats and pack animals are outlined by their shape.
+- The dot fill's default grid is half the size (2.5 px apart, 1 px dots).
+- Nametags hides the vanilla name tag (and the score under it) on players and mobs it draws its own tag for; the
+  vanilla username showed above Myriad's before (fixed in core).
+
 ## 0.1.2
 
 - No Render only listens for blocks and entities while it hides some (a block list, Vines, an entity list or Dead

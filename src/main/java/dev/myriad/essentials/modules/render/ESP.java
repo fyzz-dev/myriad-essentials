@@ -3,11 +3,13 @@ package dev.myriad.essentials.modules.render;
 import com.mojang.blaze3d.vertex.PoseStack;
 import dev.myriad.api.event.Subscribe;
 import dev.myriad.api.event.events.EntityRenderEvent;
+import dev.myriad.api.event.events.HighlightEvent;
 import dev.myriad.api.event.events.Render2DEvent;
 import dev.myriad.api.event.events.Render3DEvent;
 import dev.myriad.api.module.Categories;
 import dev.myriad.api.module.Module;
 import dev.myriad.api.render.Canvas;
+import dev.myriad.api.render.HighlightSettings;
 import dev.myriad.api.render.ModelShapes;
 import dev.myriad.api.render.Projection;
 import dev.myriad.api.render.RenderStates;
@@ -41,21 +43,24 @@ import java.util.Set;
  * <li>Hitbox: a 3D box.</li>
  * <li>Box 2D: a screen-space rectangle, optionally with a health bar.</li>
  * <li>Model: a wireframe and fill of the entity's model; anything without a model falls back to its box.</li>
+ * <li>Outline: a shader outline around the entity's exact silhouette (armour and held items included), with an
+ * optional glow, a solid or dotted fill, and a gradient.</li>
  * </ul>
  * Storage draws containers with the same style options.
  */
 public class ESP extends Module {
 	public enum Mode {
-		HITBOX, BOX_2D, MODEL
+		HITBOX, BOX_2D, MODEL, OUTLINE
 	}
 
 	private static final long FADE_MS = 200;
 
-	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.HITBOX).description("Hitbox: 3D boxes. Box 2D: screen rectangles. Model: the model's wireframe.").build();
+	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.HITBOX).description("Hitbox: 3D boxes. Box 2D: screen rectangles. Model: the model's wireframe. Outline: a shader outline around the exact shape.").build();
 	private final DoubleSetting range = sgGeneral.doubleSetting("Range").description("0 = no limit.").defaultValue(0).range(0, 256).decimals(0).build();
 	private final BoolSetting fade = sgGeneral.bool("Fade In").description("Fade entities in as they appear.").defaultValue(true).build();
 	private final BoolSetting healthBar = sgGeneral.bool("Health Bar").description("A health bar beside each box.").visible(() -> mode.get() == Mode.BOX_2D).build();
-	private final BoxStyle style = new BoxStyle(sgGeneral);
+	private final BoxStyle style = new BoxStyle(sgGeneral, () -> mode.get() != Mode.OUTLINE);
+	private final HighlightSettings outline = new HighlightSettings(settings.group("Outline"), () -> mode.get() == Mode.OUTLINE);
 	private final EntityGroups targets = new EntityGroups(settings, Set.of(Group.PLAYERS, Group.FRIENDS, Group.MONSTERS, Group.CRYSTALS, Group.PEARLS));
 
 	/** When each entity id was first drawn, for the fade-in; ids not drawn this frame are dropped. */
@@ -121,9 +126,25 @@ public class ESP extends Module {
 		}
 	}
 
+	/** Outline mode: each entity as it's prepared for drawing. */
+	@Subscribe(inGame = true)
+	private void onHighlight(HighlightEvent.Entity e) {
+		if (mode.get() != Mode.OUTLINE) return;
+		Entity entity = e.entity();
+		int c = colorFor(entity);
+		if (c == 0) return;
+		float f = fadeFor(entity, System.currentTimeMillis());
+		e.highlight(outline.style(), ColorUtil.withAlpha(c, (int) (ColorUtil.alpha(c) * f)));
+	}
+
 	@Subscribe
 	private void onRender3D(Render3DEvent e) {
 		if (!inGame() || mode.get() == Mode.BOX_2D) return;
+		// Outline mode highlights entities as they're drawn (onHighlight); only the fade bookkeeping is left.
+		if (mode.get() == Mode.OUTLINE) {
+			forgetUnseen();
+			return;
+		}
 		ShapeBuilder shapes = e.shapes();
 		long now = System.currentTimeMillis();
 		for (Entity entity : mc.level.entitiesForRendering()) {
