@@ -5,7 +5,7 @@ release says which core it needs (`myriad_version` in `gradle.properties`, the `
 
 ## 0.2.6
 
-Needs Myriad 0.2.3.
+Needs Myriad 0.2.4 (it sends Elytra Fly's held pitch again after a setback; see its changelog).
 
 - Elytra Fly's Recast is steadier left alone:
   - The highway is fixed when you turn it on (the nearest 45° to where you face, through the middle of your block),
