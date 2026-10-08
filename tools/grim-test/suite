@@ -197,6 +197,34 @@ def t_elytra_no_durability():
     return damage <= 2, f"elytra damage {damage} after 10 s of flight"
 
 
+def recast_highway(*setup):
+    """A 3-wide obsidian highway at y=200 from x=4000 east, the tester on it facing east, then `setup` commands."""
+    client("respawn", ".panic", "wait 20")
+    cmd("forceload add 3990 -8 4400 8")
+    cmd(f"tp {P} 4000.5 201 0.5 -90 0")
+    time.sleep(1.5)
+    cmd("fill 3990 200 -3 4400 206 3 air", "fill 3990 200 -1 4400 200 1 obsidian", f"clear {P}", f"gamemode survival {P}", f"effect clear {P}",
+        f"effect give {P} saturation 1 20 true", f"item replace entity {P} armor.chest with elytra", f"tp {P} 4000.5 201 0.5 -90 0", *setup)
+    time.sleep(1)
+
+
+def t_elytra_recast():
+    recast_highway()
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles stop", "wait 10", ".toggle elytra_fly on", "wait 200", ".toggle elytra_fly off", "wait 20", timeout=90)
+    x, _, z = position()
+    return x - 4000 > 200 and abs(z - 0.5) < 0.2, f"{x - 4000:.0f} blocks in 10 s, {abs(z - 0.5):.2f} off the line"
+
+
+def t_elytra_recast_obstacles():
+    # An ender chest and a 2-deep hole in the lane: the chest mined, the hole stopped at (Stop for holes without Baritone).
+    recast_highway("setblock 4150 201 0 ender_chest", "fill 4250 198 -1 4250 200 1 air",
+        f"item replace entity {P} hotbar.0 with netherite_pickaxe[enchantments={{efficiency:5}}]")
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles mine", "wait 10", ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", "wait 20", timeout=90)
+    x, y, _ = position()
+    mined = "passed" in cmd("execute if block 4150 201 0 air")
+    return mined and 4160 < x < 4250 and y > 200.5, f"chest {'mined' if mined else 'still there'}, stopped at x={x:.1f} (hole at 4250)"
+
+
 TESTS = [
     ("anticheat detects Grim", t_anticheat),
     ("selftest (every module)", t_selftest),
@@ -209,6 +237,8 @@ TESTS = [
     ("auto_eat", t_auto_eat),
     ("stack_replenish", t_stack_replenish),
     ("elytra_fly altitude", t_elytra_altitude),
+    ("elytra_fly recast", t_elytra_recast),
+    ("elytra_fly recast obstacles", t_elytra_recast_obstacles),
     ("elytra_tweaks no durability", t_elytra_no_durability),
 ]
 # Tests that toggle many modules at once; Grim's opinion of them isn't part of the result.

@@ -7,6 +7,22 @@ release says which core it needs (`myriad_version` in `gradle.properties`, the `
 
 Needs Myriad 0.2.3.
 
+- Elytra Fly's Recast is steadier left alone:
+  - The highway is fixed when you turn it on (the nearest 45° to where you face, through the middle of your block),
+    so looking around never steers it, and drifting off that line (a setback, the way round an obstacle) turns the
+    flight a little back onto it: from 0.4 blocks off, back on the line within a second.
+  - It watches far enough ahead to stop in time, growing with speed (about 33 blocks at 42 bps; it was 3.5, less than
+    two ticks of travel), for blocks in the way, cobwebs, holes at least two deep, and chunks that haven't loaded
+    (it waits for those).
+  - It stops the way a player would: no more jumps, then it lands and slides to a halt along the lane. It used to
+    zero your speed mid-air, which Grim's movement simulation doesn't expect, and the landing tick steered towards the
+    camera.
+  - Mine walks up to the block and mines it with the breaking service's Grim-safe packet mining; with Baritone, it
+    walks to the first spot past the obstacle with a floor and room to bounce, and bounces on once back on the line.
+    Holes and unbreakable blocks go to Baritone when it's installed, and otherwise stop and wait.
+  - Stuck (no progress for two seconds) or set back three times in five seconds, it walks past with Baritone or
+    turns off with a warning instead of trying again forever.
+  - Two new Grim suite tests: a straight 10 s run (272 blocks, on the line) and an ender chest plus a hole.
 - Full Bright works with shader packs in Gamma mode too: packs light the world themselves and ignored the brightened
   lightmap, so caves stayed dark. They're now told you have night vision, which they brighten by, without a real
   effect on you; vanilla's look is unchanged.

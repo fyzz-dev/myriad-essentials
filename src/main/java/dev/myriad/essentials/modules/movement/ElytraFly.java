@@ -22,6 +22,7 @@ import dev.myriad.essentials.util.GlideHold;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.SectionPos;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.util.Mth;
@@ -35,8 +36,6 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
-import java.util.Set;
 import java.util.List;
 
 /**
@@ -51,9 +50,13 @@ import java.util.List;
  * stops the glide at each landing; the answers to Grim's pings from then on are held back until you're in the air again
  * (see GlideHold), so Grim keeps expecting the glide the client keeps up, and the elytra is opened again (with a jump
  * press, as vanilla does) right after they're sent. The server's glide restarts every hop, so the elytra doesn't wear
- * either (with No Durability, long glides are cut with a chestplate, paused while you eat). Something in the lane
- * (an ender chest, a portal, a wall) stops the bounce, and Obstacles decides what happens next: stop, mine through it,
- * or have Baritone walk you round it and carry on bouncing past it.</li>
+ * either (with No Durability, long glides are cut with a chestplate, paused while you eat). The highway is fixed when
+ * you turn it on (the nearest 45° to where you face, through the middle of the block you stand on), so looking around
+ * never steers; drifting off that line turns the flight a little back onto it. Far enough ahead to stop in time (it
+ * grows with your speed) it watches for anything in the way: a block (an ender chest, a portal, a wall), a hole you
+ * could fall into, or chunks that haven't loaded. It then stops jumping and lands, as you would, and Obstacles decides
+ * what happens next: stop, mine through it, or have Baritone walk you to the first clear spot past it and bounce on
+ * from there. It also notices when it's stuck, or the server keeps setting you back, and doesn't keep trying.</li>
  * <li><b>Altitude</b> crosses open country without fireworks, "pitch 40" style. It dives until you're fast, pulls up hard, then eases
  * back to level: pulling up gives back more height than the speed it costs, so the cycle holds the altitude you started
  * gliding at (it dives harder when you're above it and climbs more when you're below). Start high, since the first dive
@@ -78,7 +81,15 @@ public class ElytraFly extends Module {
 		.visible(() -> mode.get() == Mode.RECAST).build();
 
 	private enum State {
-		IDLE, BOUNCING, MINING, PATHING
+		IDLE, BOUNCING, BRAKING, WALKING, MINING, PATHING, WAITING, BLOCKED
+	}
+
+	/** What's ahead in the lane, and how far along it. */
+	private enum Hazard {
+		BLOCKS, HOLE, UNLOADED, STUCK
+	}
+
+	private record Obstruction(Hazard hazard, double distance, List<BlockPos> blocks) {
 	}
 
 	private enum Phase {
@@ -87,12 +98,35 @@ public class ElytraFly extends Module {
 
 	/** Recast: dive while vertical speed is above this, level out below it. */
 	private static final double DIVE_UNTIL_Y = -0.2;
-	/** Recast: how far ahead to look for blocks in the lane, and how far past them Baritone walks. */
-	private static final double LOOK_AHEAD = 3.5, BYPASS_DISTANCE = 8;
-	/** How far apart the swept hitboxes are along the lane. */
-	private static final double SWEEP_STEP = 0.25;
-	/** Recast: ticks to stop after the server snaps you back. */
-	private static final int FLAG_PAUSE = 5;
+	/**
+	 * Recast: how far ahead the lane is watched, in blocks, plus this many ticks of travel at the current speed. A hop
+	 * is about 9 ticks in the air, and stopping takes the rest of the hop and a few ticks of sliding once you land.
+	 */
+	private static final double LOOK_AHEAD = 4, LOOK_AHEAD_TICKS = 14;
+	/**
+	 * Recast: once stopped, bouncing only starts again with this much clear: what it watches at a usual bounce's speed
+	 * (2 blocks a tick), so it doesn't hop, see the obstacle again and stop, over and over, on the way up to it.
+	 */
+	private static final double RESUME_LOOK_AHEAD = LOOK_AHEAD + 2 * LOOK_AHEAD_TICKS;
+	/** How far apart the swept hitboxes are along the lane (each also covers the step to the next). */
+	private static final double SWEEP_STEP = 0.5;
+	/** What counts as in the way, above the floor: from this (carpets and snow layers don't) to the top of a hop. */
+	private static final double FLOOR_CLEARANCE = 0.2, HOP_CLEARANCE = 2.9;
+	/** Recast: ticks to stop after the server snaps you back; and how many snaps within the window mean it's stuck. */
+	private static final int FLAG_PAUSE = 5, SETBACK_LIMIT = 3, SETBACK_WINDOW = 100;
+	/** Recast: less than this far along the lane in this many ticks of trying means stuck. */
+	private static final double STUCK_PROGRESS = 1.5;
+	private static final int STUCK_TICKS = 40;
+	/**
+	 * Recast, keeping to the line: the sideways speed asked for per block off it (blocks a tick), its most, how hard it
+	 * damps the sideways speed you have, and the most the flight turns away from the lane, in degrees.
+	 */
+	private static final double STEER_GAIN = 0.15, STEER_MAX_SPEED = 0.25, STEER_DAMPING = 1.5;
+	private static final float STEER_MAX_TURN = 10;
+	/** Recast with Baritone: this far off the line, walk back to it; and how far past an obstacle to look for room. */
+	private static final double RECENTRE_DISTANCE = 3, PASS_SEARCH = 48;
+	/** Within this of a block, mine it rather than walk closer. */
+	private static final double MINE_REACH = 3.5;
 	/**
 	 * Altitude, worked out on vanilla's glide physics: dive at {@code DIVE_PITCH} until faster than the threshold (blocks a
 	 * second), snap up to {@code CLIMB_PITCH} at {@code PULL_RATE} a tick, then ease back to level at {@code EASE_RATE}.
@@ -108,7 +142,7 @@ public class ElytraFly extends Module {
 	private float climbPitch;
 	private double cruiseY = Double.NaN;
 
-	private boolean wantJump, spoofing;
+	private boolean wantJump, wantForward, spoofing;
 	/** Open the elytra this tick (see {@link #startGliding}); and whether jump was pressed last tick. */
 	private boolean wantOpen, jumpedLastTick;
 	/** Keep gliding client-side through ground touches; set once the elytra has opened while bouncing. */
@@ -123,9 +157,23 @@ public class ElytraFly extends Module {
 	/** Recast: ticks the server has been gliding without a stop; and the most before the chestplate ends it. */
 	private int longGlide;
 	private static final int LONG_GLIDE = 12;
-	private float lane, spoofYaw, spoofPitch;
+	private float spoofYaw, spoofPitch;
+	/** Recast: the lane's direction (one of the eight highway directions, NaN until fixed) and a point on its line. */
+	private float lane = Float.NaN;
+	private Vec3 lineOrigin;
 	private BlockPos mining;
-	private int pathWait;
+	private int portalWait;
+	/** Recast with Baritone: where it's walking you, and how long it's been idle on the way. */
+	private Vec3 pathTarget;
+	private int pathWait, pathTries;
+	/** Recast: how far along the lane you were each of the last {@link #STUCK_TICKS} ticks spent trying to move. */
+	private final double[] progress = new double[STUCK_TICKS];
+	private int progressCount;
+	/** Recast: game times of recent setbacks. */
+	private final java.util.ArrayDeque<Long> setbacks = new java.util.ArrayDeque<>();
+	/** Recast: stuck, or set back too often: the lane counts as blocked until it's passed. */
+	private boolean forcedBlock;
+	private boolean warned;
 
 	public ElytraFly() {
 		super(Categories.MOVEMENT, "Elytra Fly", "Bounce along highways, or cross open country without fireworks.");
@@ -135,7 +183,6 @@ public class ElytraFly extends Module {
 	protected void onEnable() {
 		activeMode = mode.get();
 		reset();
-		if (inGame()) lane = snap(mc.player.getYRot());
 	}
 
 	@Override
@@ -148,10 +195,13 @@ public class ElytraFly extends Module {
 		state = State.IDLE;
 		phase = Phase.DIVE;
 		cruiseY = groundY = Double.NaN;
-		wantJump = spoofing = holdGlide = flagged = false;
+		wantJump = wantForward = spoofing = holdGlide = flagged = forcedBlock = warned = false;
 		letGo();
 		putElytraBack();
-		pathWait = pauseTicks = 0;
+		pathWait = pathTries = pauseTicks = progressCount = 0;
+		pathTarget = null;
+		lane = Float.NaN;
+		setbacks.clear();
 		stopMining();
 	}
 
@@ -159,8 +209,11 @@ public class ElytraFly extends Module {
 	public String hudInfo() {
 		if (activeMode == Mode.ALTITUDE) return Double.isNaN(cruiseY) ? "Altitude" : String.format("Y%.0f", cruiseY);
 		return switch (state) {
-			case MINING -> "Mining";
+			case BRAKING -> "Stopping";
+			case WALKING, MINING -> "Mining";
 			case PATHING -> "Baritone";
+			case WAITING -> "Loading";
+			case BLOCKED -> "Blocked";
 			case BOUNCING -> pauseTicks > 0 ? "Flagged" : String.format("%.0f°", lane);
 			case IDLE -> null;
 		};
@@ -211,6 +264,10 @@ public class ElytraFly extends Module {
 	@Subscribe
 	private void onInput(InputEvent e) {
 		if (wantJump) e.jump = true;
+		if (wantForward) {
+			e.forward = e.sprint = true;
+			e.backward = e.left = e.right = false;
+		}
 		// Vanilla opens the elytra when jump goes from released to pressed in the air: release it for a tick if it's
 		// held, then press it.
 		if (wantOpen) e.jump = !jumpedLastTick;
@@ -239,7 +296,7 @@ public class ElytraFly extends Module {
 	 */
 	@Subscribe(priority = Priority.BEFORE_ACTIONS + 10)
 	private void onTick(TickEvent.Pre e) {
-		wantJump = wantOpen = false;
+		wantJump = wantOpen = wantForward = false;
 		if (!inGame()) return;
 		if (mode.get() != activeMode) {
 			reset();
@@ -298,6 +355,7 @@ public class ElytraFly extends Module {
 		if (flagged) {
 			flagged = false;
 			pauseTicks = FLAG_PAUSE;
+			countSetback();
 		}
 		if (state == State.PATHING) {
 			tickPathing();
@@ -308,24 +366,42 @@ public class ElytraFly extends Module {
 			state = State.IDLE;
 			return;
 		}
-		if (state != State.MINING) lane = snap(mc.player.getYRot());
+		if (Float.isNaN(lane)) fixLine();
+		if (mc.player.onGround()) groundY = mc.player.getY();
 
-		List<BlockPos> blocked = laneBlocks();
-		if (!blocked.isEmpty()) {
-			handleObstacle(blocked);
+		double range = state == State.BOUNCING ? lookAhead() : Math.max(lookAhead(), RESUME_LOOK_AHEAD);
+		Obstruction ahead = forcedBlock ? new Obstruction(Hazard.STUCK, 0, List.of()) : scanAhead(range);
+		if (ahead == null && obstacles.get() == Obstacles.BARITONE && Baritone.isAvailable()
+			&& Math.abs(offLine(mc.player.position())) > RECENTRE_DISTANCE) {
+			// Well off the highway (a setback, or the way round something): walk back onto it first.
+			ahead = new Obstruction(Hazard.STUCK, 0, List.of());
+		}
+		if (ahead != null) {
+			handleObstacle(ahead);
 			return;
 		}
-		if (state == State.MINING) stopMining();
-		state = State.BOUNCING;
+		if (state != State.BOUNCING) {
+			stopMining();
+			state = State.BOUNCING;
+			warned = false;
+			progressCount = 0;
+		}
 		if (pauseTicks > 0) {
 			// The server rejected a move: let its correction land before bouncing on from there.
 			pauseTicks--;
 			spoofing = holdGlide = false;
 			letGo();
+			progressCount = 0;
 			return;
 		}
+		if (trackStuck()) return;
+		bounce();
+	}
+
+	/** One tick of the bounce itself. */
+	private void bounce() {
 		GlideHold.arm(this);
-		spoof(lane, mc.player.getDeltaMovement().y > DIVE_UNTIL_Y ? 90 : 4);
+		spoof(steeredYaw(), mc.player.getDeltaMovement().y > DIVE_UNTIL_Y ? 90 : 4);
 		// Vanilla waits 10 ticks between held jumps; jump the tick you touch down.
 		Interactions.setJumpCooldown(0);
 		boolean ground = mc.player.onGround();
@@ -368,25 +444,136 @@ public class ElytraFly extends Module {
 		}
 	}
 
-	private void handleObstacle(List<BlockPos> blocked) {
-		stopBouncing();
+	/**
+	 * Something's in the way (or the lane ahead hasn't loaded): stop the bounce first, then deal with it once you're
+	 * standing.
+	 */
+	private void handleObstacle(Obstruction ahead) {
+		if (state == State.BOUNCING || state == State.BRAKING) {
+			if (!brake()) {
+				state = State.BRAKING;
+				return;
+			}
+		}
 		Obstacles how = obstacles.get();
-		if (how == Obstacles.BARITONE && Baritone.isAvailable()) {
-			startPathing();
-			return;
+		boolean walkRound = how != Obstacles.STOP && Baritone.isAvailable();
+		switch (ahead.hazard()) {
+			case UNLOADED -> {
+				// Not an obstacle: wait where you are until it loads, then bounce on.
+				stand();
+				state = State.WAITING;
+			}
+			case BLOCKS -> {
+				if (how == Obstacles.BARITONE && walkRound) startPathing(ahead.distance());
+				else if (how == Obstacles.STOP) blocked("Lane blocked");
+				else {
+					// Unbreakable blocks (bedrock, barriers) can only be stopped at or walked round.
+					BlockPos breakable = null;
+					for (BlockPos pos : ahead.blocks()) {
+						if (mc.level.getBlockState(pos).getDestroySpeed(mc.level, pos) >= 0) {
+							breakable = pos;
+							break;
+						}
+					}
+					if (breakable != null) mineOrApproach(breakable);
+					else if (walkRound) startPathing(ahead.distance());
+					else blocked("Lane blocked by something unbreakable");
+				}
+			}
+			case HOLE -> {
+				if (walkRound) startPathing(ahead.distance());
+				else blocked("Hole in the lane");
+			}
+			case STUCK -> {
+				forcedBlock = false;
+				if (walkRound) startPathing(1);
+				else giveUp("Stuck (or set back over and over) and no way round without Baritone");
+			}
 		}
-		if (how == Obstacles.STOP) {
-			state = State.IDLE;
-			return;
+	}
+
+	/**
+	 * Stops bouncing the way a player would, so nothing about it looks odd to the server: no more jumps and the glide let
+	 * go, diving (along the lane) to land soon, then sliding to a halt. True once you're standing still.
+	 */
+	private boolean brake() {
+		holdGlide = false;
+		letGo();
+		putElytraBack();
+		var p = mc.player;
+		// Still flying while the elytra's open, the tick you land too: along the lane, not where the camera looks.
+		if (!p.onGround() || elytraOpen()) {
+			spoof(lane, 90);
+			return false;
 		}
-		// Unbreakable blocks (bedrock, barriers) can only be stopped at or walked round.
-		for (BlockPos pos : blocked) {
-			if (mc.level.getBlockState(pos).getDestroySpeed(mc.level, pos) < 0) continue;
-			state = State.MINING;
+		spoofing = false;
+		Vec3 v = p.getDeltaMovement();
+		return v.x * v.x + v.z * v.z < 0.03 * 0.03;
+	}
+
+	/** Standing in front of an obstacle: no flight, nothing pressed. */
+	private void stand() {
+		spoofing = holdGlide = false;
+		letGo();
+		putElytraBack();
+	}
+
+	private void blocked(String why) {
+		stand();
+		state = State.BLOCKED;
+		if (!warned) warn(why + ", waiting until it's clear");
+		warned = true;
+	}
+
+	private void giveUp(String why) {
+		warn(why + ": turning off");
+		disable();
+	}
+
+	/** Mines the block once it's in reach, walking along the lane up to it first. */
+	private void mineOrApproach(BlockPos pos) {
+		if (mc.player.getEyePosition().distanceTo(Vec3.atCenterOf(pos)) <= MINE_REACH) {
+			stand();
+			if (!pos.equals(mining)) stopMining();
+			// Asked every tick (asking again for the same block is free), so a refused or dropped break is tried again.
 			mine(pos);
+			state = State.MINING;
+			progressCount = 0;
 			return;
 		}
-		state = State.IDLE;
+		if (state == State.MINING) stopMining();
+		state = State.WALKING;
+		// Walk the lane's way whatever the camera does (the spoofed yaw moves you), back towards its line.
+		spoof(steeredYaw(), 0);
+		wantForward = true;
+		trackStuck();
+	}
+
+	/**
+	 * Counts the server's setbacks: a few in a short while (something the bounce keeps running into that isn't a
+	 * block, or a check it keeps failing) count as the lane being blocked.
+	 */
+	private void countSetback() {
+		long now = mc.level.getGameTime();
+		setbacks.addLast(now);
+		while (!setbacks.isEmpty() && now - setbacks.peekFirst() > SETBACK_WINDOW) setbacks.removeFirst();
+		if (setbacks.size() >= SETBACK_LIMIT && state == State.BOUNCING) {
+			setbacks.clear();
+			forcedBlock = true;
+		}
+	}
+
+	/** Whether you've been trying to move along the lane without getting anywhere; if so the lane counts as blocked. */
+	private boolean trackStuck() {
+		double along = along(mc.player.position());
+		int slot = progressCount % STUCK_TICKS;
+		boolean stuck = progressCount >= STUCK_TICKS && along - progress[slot] < STUCK_PROGRESS;
+		progress[slot] = along;
+		progressCount++;
+		if (!stuck) return false;
+		progressCount = 0;
+		forcedBlock = true;
+		return true;
 	}
 
 	private void stopBouncing() {
@@ -394,7 +581,6 @@ public class ElytraFly extends Module {
 		holdGlide = false;
 		letGo();
 		putElytraBack();
-		if (state == State.BOUNCING || state == State.MINING) pauseFlight();
 	}
 
 	/**
@@ -415,35 +601,63 @@ public class ElytraFly extends Module {
 
 	// ---- Baritone -------------------------------------------------------------------------------------------------
 
-	private void startPathing() {
-		Vec3 lane = laneDir();
-		Vec3 target = mc.player.position().add(lane.scale(LOOK_AHEAD + BYPASS_DISTANCE));
-		// Come back to the lane's own level, not wherever the obstacle left you standing.
-		int y = Double.isNaN(groundY) ? mc.player.getBlockY() : Mth.floor(groundY + 0.5);
-		if (!Baritone.pathTo(Mth.floor(target.x), y, Mth.floor(target.z))) {
-			state = State.MINING;
+	/**
+	 * Walks to the first spot on the lane's line, past {@code distance} ahead, with a floor and room to bounce from,
+	 * then bounces on from there.
+	 */
+	private void startPathing(double distance) {
+		stand();
+		Vec3 target = clearSpotPast(along(mc.player.position()) + distance);
+		if (target == null || !Baritone.pathTo(Mth.floor(target.x), Mth.floor(target.y + 0.1), Mth.floor(target.z))) {
+			giveUp("No way past the obstacle");
 			return;
 		}
+		if (pathTarget == null) info("Lane blocked, walking past it with Baritone");
+		pathTarget = target;
 		state = State.PATHING;
 		pathWait = 0;
-		info("Lane blocked, walking round it with Baritone");
 	}
 
-	/** Waits for Baritone to get past the obstacle, then bounces on (or gives up after a few seconds without a path). */
+	/** Waits for Baritone to get you back onto the lane past the obstacle, then bounces on. */
 	private void tickPathing() {
 		spoofing = false;
 		holdGlide = false;
 		letGo();
+		Vec3 pos = mc.player.position();
+		if (mc.player.onGround() && along(pos) >= along(pathTarget) - 1 && Math.abs(offLine(pos)) <= 1) {
+			Baritone.stop();
+			pathTarget = null;
+			pathTries = 0;
+			state = State.BOUNCING;
+			progressCount = 0;
+			return;
+		}
 		if (Baritone.isPathing()) {
 			pathWait = 0;
 			return;
 		}
-		// Give the pathfinder a moment to start before deciding it's done or failed.
+		// Give the pathfinder a moment to start before deciding it's stuck, then try somewhere further on, twice.
 		if (++pathWait < 40) return;
-		state = State.IDLE;
-		if (laneBlocks().isEmpty()) return;
-		warn("Baritone couldn't get past the obstacle");
-		disable();
+		if (++pathTries > 2) {
+			giveUp("Baritone couldn't get past the obstacle");
+			return;
+		}
+		startPathing(along(pathTarget) - along(pos) + 4);
+	}
+
+	/** The first spot from {@code from} along the line (and the one after it) you could stand and bounce from. */
+	private Vec3 clearSpotPast(double from) {
+		for (double t = Math.ceil(from); t < from + PASS_SEARCH; t++) {
+			if (standable(pointOnLine(t)) && standable(pointOnLine(t + 1))) return pointOnLine(t);
+		}
+		return null;
+	}
+
+	private boolean standable(Vec3 feet) {
+		AABB body = new AABB(feet.x - 0.3, feet.y + FLOOR_CLEARANCE, feet.z - 0.3, feet.x + 0.3, feet.y + 1.8, feet.z + 0.3);
+		if (!loaded(feet) || blocksIn(body, null)) return false;
+		BlockPos floor = BlockPos.containing(feet.x, feet.y - 0.5, feet.z);
+		return !mc.level.getBlockState(floor).getCollisionShape(mc.level, floor).isEmpty();
 	}
 
 	// ---- rotation and flight --------------------------------------------------------------------------------------
@@ -474,15 +688,6 @@ public class ElytraFly extends Module {
 		return open;
 	}
 
-	/** Stops in front of an obstacle: no more forward speed, the elytra closed, falling allowed. */
-	private void pauseFlight() {
-		holdGlide = false;
-		var p = mc.player;
-		if (p.isFallFlying()) p.stopFallFlying();
-		p.setDeltaMovement(0, Math.min(0, p.getDeltaMovement().y), 0);
-		p.hurtMarked = true;
-	}
-
 	/** Whether the player could glide right now: an elytra on (or swappable on), and nothing vanilla forbids it for. */
 	private boolean canGlide() {
 		var p = mc.player;
@@ -497,6 +702,58 @@ public class ElytraFly extends Module {
 		return Vec3.directionFromRotation(0, lane);
 	}
 
+	/**
+	 * Fixes the lane: the nearest highway direction to where you face, through the middle of the block you're on (on a
+	 * highway, diagonal or not, that's a line through the middle of its blocks).
+	 */
+	private void fixLine() {
+		var p = mc.player;
+		lane = snap(p.getYRot());
+		lineOrigin = new Vec3(p.getBlockX() + 0.5, p.getY(), p.getBlockZ() + 0.5);
+	}
+
+	/** How far {@code pos} is along the lane from where it was fixed. */
+	private double along(Vec3 pos) {
+		Vec3 dir = laneDir();
+		return (pos.x - lineOrigin.x) * dir.x + (pos.z - lineOrigin.z) * dir.z;
+	}
+
+	/** How far {@code pos} is to the side of the lane's line (positive the way yaw turns). */
+	private double offLine(Vec3 pos) {
+		Vec3 dir = laneDir();
+		return (pos.x - lineOrigin.x) * -dir.z + (pos.z - lineOrigin.z) * dir.x;
+	}
+
+	/** The point {@code t} blocks along the line, at the floor's height. */
+	private Vec3 pointOnLine(double t) {
+		Vec3 dir = laneDir();
+		return new Vec3(lineOrigin.x + dir.x * t, floorY(), lineOrigin.z + dir.z * t);
+	}
+
+	/** The height you bounce off: where you last landed. */
+	private double floorY() {
+		return Double.isNaN(groundY) ? lineOrigin.y : groundY;
+	}
+
+	/**
+	 * The flight yaw: the lane's, turned a little back towards its line when you've drifted to the side, by as much as
+	 * brings you back without overshooting (the sideways speed you already have counts against it).
+	 */
+	private float steeredYaw() {
+		Vec3 dir = laneDir(), v = mc.player.getDeltaMovement();
+		double off = offLine(mc.player.position());
+		double sideways = v.x * -dir.z + v.z * dir.x, forwards = Math.max(0.5, v.x * dir.x + v.z * dir.z);
+		double want = Mth.clamp(-off * STEER_GAIN, -STEER_MAX_SPEED, STEER_MAX_SPEED);
+		double aim = want + (want - sideways) * STEER_DAMPING;
+		return lane + Mth.clamp((float) Math.toDegrees(Math.atan2(aim, forwards)), -STEER_MAX_TURN, STEER_MAX_TURN);
+	}
+
+	/** How far ahead to watch: enough to stop from this speed. */
+	private double lookAhead() {
+		Vec3 v = mc.player.getDeltaMovement();
+		return LOOK_AHEAD + Math.sqrt(v.x * v.x + v.z * v.z) * LOOK_AHEAD_TICKS;
+	}
+
 	/** The nearest of the eight highway directions. */
 	private static float snap(float yaw) {
 		return Mth.wrapDegrees(45f * Math.round(yaw / 45f));
@@ -506,15 +763,19 @@ public class ElytraFly extends Module {
 
 	private void mine(BlockPos pos) {
 		BlockState block = mc.level.getBlockState(pos);
+		boolean again = pos.equals(mining);
+		portalWait = again ? portalWait + 1 : 0;
 		if (isPortal(block)) {
+			// Once, and again every half second while it's still there.
+			if (again && portalWait % 10 != 0) return;
 			// Portals break instantly server-side but not client-side: send the dig directly.
 			Direction face = Direction.getApproximateNearest(-laneDir().x, 0, -laneDir().z);
 			Packets.sendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, pos, face, seq));
 			Packets.sendSequenced(seq -> new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, pos, face, seq));
 			mc.player.swing(InteractionHand.MAIN_HAND);
 		} else {
-			// The breaking service picks and holds the tool, and swings.
-			Myriad.breaking().breakBlock(this, pos, Rotations.PRIORITY_HIGH, Breaking.Options.DEFAULT);
+			// The breaking service picks the tool, faces the block and swings, with Grim's timing.
+			Myriad.breaking().breakBlock(this, pos, Rotations.PRIORITY_HIGH, Breaking.Options.PACKET.withRotate(true));
 		}
 		mining = pos.immutable();
 	}
@@ -525,31 +786,57 @@ public class ElytraFly extends Module {
 	}
 
 	/**
-	 * What's in the way: the blocks the player's hitbox would run into sliding {@link #LOOK_AHEAD} blocks along the lane
-	 * (a little narrower than the hitbox, so brushing a wall doesn't count), nearest first.
+	 * The first thing in the lane within {@code range}: blocks the player's hitbox would run into sliding along it (a
+	 * little narrower than the hitbox, so brushing a wall doesn't count; from just above the floor to the top of a hop),
+	 * a hole at least two deep (one you'd land in and not hop out of), or chunks that haven't loaded. Null if it's clear.
 	 */
-	private List<BlockPos> laneBlocks() {
-		Vec3 dir = laneDir();
-		// Lifted off the floor (so the ground isn't an obstacle) and with room above the head for the bounce.
+	private Obstruction scanAhead(double range) {
+		Vec3 dir = laneDir(), step = dir.scale(SWEEP_STEP);
 		AABB box = mc.player.getBoundingBox();
-		AABB body = box.inflate(-0.2, 0, -0.2).setMinY(box.minY + 0.2).setMaxY(box.maxY + 0.5);
-		Set<BlockPos> hits = new LinkedHashSet<>();
-		for (double d = SWEEP_STEP; d <= LOOK_AHEAD + 1e-9; d += SWEEP_STEP) {
-			AABB at = body.move(dir.scale(d));
-			for (BlockPos pos : BlockPos.betweenClosed(BlockPos.containing(at.minX, at.minY, at.minZ), BlockPos.containing(at.maxX, at.maxY, at.maxZ))) {
-				if (!hits.contains(pos) && obstructs(pos, at)) hits.add(pos.immutable());
+		double floor = floorY();
+		AABB body = new AABB(box.minX + 0.2, floor + FLOOR_CLEARANCE, box.minZ + 0.2, box.maxX - 0.2, floor + HOP_CLEARANCE, box.maxZ - 0.2);
+		AABB feet = new AABB(box.minX, floor - 2, box.minZ, box.maxX, floor - 0.5, box.maxZ);
+		List<BlockPos> hits = new ArrayList<>();
+		for (double d = 0; d <= range; d += SWEEP_STEP) {
+			Vec3 at = dir.scale(d);
+			if (!loaded(mc.player.position().add(at))) return new Obstruction(Hazard.UNLOADED, d, List.of());
+			if (blocksIn(body.move(at).expandTowards(step), hits)) {
+				Vec3 eye = mc.player.getEyePosition();
+				hits.sort(Comparator.comparingDouble(pos -> pos.distToCenterSqr(eye)));
+				return new Obstruction(Hazard.BLOCKS, d, hits);
+			}
+			// The floor: nothing to stand on for two blocks down under the whole hitbox. Every quarter block, so even a
+			// hole just wider than you (one block) is found wherever you are.
+			if (d >= 1 && (!blocksIn(feet.move(at), null) || !blocksIn(feet.move(at.add(step.scale(0.5))), null))) {
+				return new Obstruction(Hazard.HOLE, d, List.of());
 			}
 		}
-		List<BlockPos> sorted = new ArrayList<>(hits);
-		Vec3 eye = mc.player.position();
-		sorted.sort(Comparator.comparingDouble(pos -> pos.distToCenterSqr(eye)));
-		return sorted;
+		return null;
 	}
 
-	/** Whether the block at {@code pos} is something to clear: a portal, or a collision shape that meets {@code box}. */
+	/** Whether anything in {@code box} is in the way (see {@link #obstructs}); each such block is added to {@code hits}. */
+	private boolean blocksIn(AABB box, List<BlockPos> hits) {
+		boolean any = false;
+		for (BlockPos pos : BlockPos.betweenClosed(BlockPos.containing(box.minX, box.minY, box.minZ), BlockPos.containing(box.maxX, box.maxY, box.maxZ))) {
+			if (!obstructs(pos, box)) continue;
+			if (hits == null) return true;
+			hits.add(pos.immutable());
+			any = true;
+		}
+		return any;
+	}
+
+	private boolean loaded(Vec3 pos) {
+		return mc.level.hasChunk(SectionPos.blockToSectionCoord(pos.x), SectionPos.blockToSectionCoord(pos.z));
+	}
+
+	/**
+	 * Whether the block at {@code pos} is something to clear: a portal, a cobweb (no collision, but it stops you dead),
+	 * or a collision shape that meets {@code box}.
+	 */
 	private boolean obstructs(BlockPos pos, AABB box) {
 		BlockState state = mc.level.getBlockState(pos);
-		if (isPortal(state)) return true;
+		if (isPortal(state) || state.is(Blocks.COBWEB)) return true;
 		if (state.isAir() || !state.getFluidState().isEmpty()) return false;
 		return state.getCollisionShape(mc.level, pos).toAabbs().stream().anyMatch(part -> part.move(pos).intersects(box));
 	}
