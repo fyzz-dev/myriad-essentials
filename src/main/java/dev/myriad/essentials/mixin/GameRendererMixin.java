@@ -3,6 +3,8 @@ package dev.myriad.essentials.mixin;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
+import dev.myriad.api.module.Modules;
+import dev.myriad.essentials.modules.render.FullBright;
 import dev.myriad.essentials.modules.render.NoRender;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
@@ -10,12 +12,14 @@ import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.core.Holder;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(GameRenderer.class)
 public abstract class GameRendererMixin {
@@ -27,6 +31,16 @@ public abstract class GameRendererMixin {
 	@Inject(method = "displayItemActivation", at = @At("HEAD"), cancellable = true)
 	private void essentials$totem(ItemStack stack, CallbackInfo ci) {
 		if (stack.is(Items.TOTEM_OF_UNDYING) && NoRender.hides(n -> n.totem)) ci.cancel();
+	}
+
+	/**
+	 * Full Bright under a shader pack: Iris hands packs this as their {@code nightVision} uniform (which they brighten
+	 * dark places by) without checking for the effect, while vanilla only asks with night vision on. So shader packs see
+	 * full night vision and vanilla's look is unchanged.
+	 */
+	@Inject(method = "nightVisionScale", at = @At("HEAD"), cancellable = true)
+	private static void essentials$fullBright(LivingEntity entity, float partialTicks, CallbackInfoReturnable<Float> cir) {
+		if (Modules.active(FullBright.class) != null) cir.setReturnValue(1f);
 	}
 
 	/** No Render Nausea: the screen warp reads nausea's strength here; report none. */

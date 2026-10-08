@@ -10,7 +10,8 @@ import net.minecraft.world.effect.MobEffects;
 
 /**
  * Lights everything up. Gamma pushes the lightmap past the brightest video setting; Night Vision gives you a
- * client-side night vision effect instead, which shader packs respect.
+ * client-side night vision effect instead, with vanilla's night vision look. Shader packs light the world themselves
+ * and ignore the lightmap, so in either mode they're told you have night vision (see this addon's GameRendererMixin).
  */
 public class FullBright extends Module {
 	public enum Mode {
@@ -21,7 +22,7 @@ public class FullBright extends Module {
 	public static final float GAMMA = 15f;
 
 	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.GAMMA)
-		.description("Gamma brightens the lightmap; Night Vision gives a client-side effect, which works with shaders.").build();
+		.description("Gamma brightens the lightmap; Night Vision gives a client-side night vision effect. Both work with shaders.").build();
 
 	/** The night vision effect this module gave you, so only that one is ever removed (never a real one). */
 	private MobEffectInstance added;

@@ -3,6 +3,14 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.6
+
+Needs Myriad 0.2.3.
+
+- Full Bright works with shader packs in Gamma mode too: packs light the world themselves and ignored the brightened
+  lightmap, so caves stayed dark. They're now told you have night vision, which they brighten by, without a real
+  effect on you; vanilla's look is unchanged.
+
 ## 0.2.5
 
 Needs Myriad 0.2.3.
