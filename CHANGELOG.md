@@ -23,6 +23,14 @@ Needs Myriad 0.2.3.
   - Stuck (no progress for two seconds) or set back three times in five seconds, it walks past with Baritone or
     turns off with a warning instead of trying again forever.
   - Two new Grim suite tests: a straight 10 s run (272 blocks, on the line) and an ender chest plus a hole.
+- Elytra Tweaks' No Durability no longer lands you with fall damage you didn't earn. While it swaps, the server
+  takes you as falling, not gliding, and counts every block you come down (only rising clears it): gliding down to
+  land afterwards cost all of it, up to a lethal fall from a gentle landing (a test flight banked 78 blocks; Grim test
+  server, no lag). It now keeps that count as the server does, and once it's past a safe fall it looks ahead far
+  enough (below you and along your flight, for a round trip plus the second or so the server needs to let go of it)
+  to put the elytra back on in time; the landing test now touches down at full health. Swaps also stop for rising
+  ground, walls and trees ahead, not only for the ground straight below, and stopping never drops you out of the
+  glide in mid-air (it waits the one tick until the glide can start again). New suite test: a No Durability landing.
 - Full Bright works with shader packs in Gamma mode too: packs light the world themselves and ignored the brightened
   lightmap, so caves stayed dark. They're now told you have night vision, which they brighten by, without a real
   effect on you; vanilla's look is unchanged.
