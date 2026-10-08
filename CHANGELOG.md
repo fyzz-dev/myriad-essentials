@@ -3,6 +3,17 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.9
+
+Needs Myriad 0.2.6.
+
+- Auto Eat picks food by why it eats. Low health eats Health Foods first (new setting; golden apples by default), the
+  strongest first: an enchanted golden apple's absorption and regeneration before a plain one. Hunger eats the most
+  saturating ordinary food (golden carrots before steak) and, with Save Health Foods (on by default), golden apples
+  only when there's nothing else, the plain ones first. Food is found anywhere in the inventory, not just the hotbar:
+  it's borrowed into the hotbar and put back where it was afterwards.
+- Grim suite: an Auto Eat food choice test.
+
 ## 0.2.8
 
 Needs Myriad 0.2.6.

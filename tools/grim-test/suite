@@ -167,6 +167,27 @@ def t_auto_eat():
     return left < 16 and after > before, f"food {before} -> {after}, {16 - left} eaten"
 
 
+def t_auto_eat_choice():
+    # Low health: the enchanted golden apple, even from the main inventory, over a golden apple and golden carrots.
+    # Hunger: golden carrots from the main inventory, keeping the golden apples.
+    reset()
+    cmd(f"item replace entity {P} hotbar.0 with golden_carrot 8", f"item replace entity {P} hotbar.1 with golden_apple 8",
+        f"item replace entity {P} inventory.11 with enchanted_golden_apple 4", f"damage {P} 12")
+    client(".set auto_eat health true", ".set auto_eat health_threshold 10", ".toggle auto_eat on", "wait 80", ".toggle auto_eat off", "wait 30", timeout=60)
+    egap, apples, carrots = count(20), count(1), count(0)
+    health_ok = egap == 3 and apples == 8 and carrots == 8
+    reset()
+    cmd(f"item replace entity {P} hotbar.1 with golden_apple 8", f"item replace entity {P} inventory.10 with golden_carrot 8", f"effect clear {P}")
+    for _ in range(20):
+        if 0 <= food() <= 12: break
+        cmd(f"effect give {P} hunger 1 100 true")
+        time.sleep(1.2)
+    client(".toggle auto_eat on", "wait 80", ".toggle auto_eat off", "wait 30", timeout=60)
+    hunger_ok = count(19) < 8 and count(1) == 8
+    return health_ok and hunger_ok, (f"low health ate {4 - egap} enchanted from the inventory, {8 - apples} golden apples, {8 - carrots} carrots; "
+        f"hungry ate {8 - count(19)} carrots from the inventory, {8 - count(1)} golden apples")
+
+
 def t_stack_replenish():
     reset()
     cmd(f"item replace entity {P} hotbar.0 with cobblestone 1", f"item replace entity {P} inventory.0 with cobblestone 64")
@@ -318,6 +339,7 @@ TESTS = [
     ("offhand", t_offhand),
     ("auto_armor", t_auto_armor),
     ("auto_eat", t_auto_eat),
+    ("auto_eat choice", t_auto_eat_choice),
     ("auto_disconnect", t_auto_disconnect),
     ("stack_replenish", t_stack_replenish),
     ("elytra_fly altitude", t_elytra_altitude),
