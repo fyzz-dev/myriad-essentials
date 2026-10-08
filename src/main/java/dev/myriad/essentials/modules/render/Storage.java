@@ -461,14 +461,34 @@ public class Storage extends Module {
 
 	// ---- per frame --------------------------------------------------------------------------------------------------
 
-	/** Outline mode: every container shown (the shapes off screen are skipped by the renderer). */
+	/**
+	 * Outline mode: every container shown (the shapes off screen are skipped by the renderer), except the block Block
+	 * Highlight is on, which shows its look instead (the other half of a double chest still shows this one).
+	 */
 	@Subscribe(inGame = true)
 	private void onHighlightShapes(HighlightEvent.Shapes e) {
 		if (mode.get() != Mode.OUTLINE) return;
 		var style = outline.style();
+		BlockPos highlighted = BlockHighlight.highlighted();
+		AABB skip = highlighted == null ? null : new AABB(highlighted);
 		found.forEach(list -> {
-			for (Found f : list) if (f.kind.enabled.get()) e.box(f.box, style, color(f));
+			for (Found f : list) {
+				if (!f.kind.enabled.get()) continue;
+				AABB box = skip != null && f.box.intersects(skip) ? outside(f.box, skip) : f.box;
+				if (box != null) e.box(box, style, color(f));
+			}
 		});
+	}
+
+	/** The part of {@code box} past {@code block} along the one side it reaches out of it (a double chest's other half), or null. */
+	private static AABB outside(AABB box, AABB block) {
+		if (box.minX < block.minX - 1e-6) return box.setMaxX(block.minX);
+		if (box.maxX > block.maxX + 1e-6) return box.setMinX(block.maxX);
+		if (box.minZ < block.minZ - 1e-6) return box.setMaxZ(block.minZ);
+		if (box.maxZ > block.maxZ + 1e-6) return box.setMinZ(block.maxZ);
+		if (box.minY < block.minY - 1e-6) return box.setMaxY(block.minY);
+		if (box.maxY > block.maxY + 1e-6) return box.setMinY(block.maxY);
+		return null;
 	}
 
 	/** Outline mode: storage entities (chest minecarts and boats, pack animals) by their exact shape. */

@@ -1,11 +1,11 @@
 package dev.myriad.essentials.modules.render;
 
-import dev.myriad.api.event.Priority;
 import dev.myriad.api.event.Subscribe;
 import dev.myriad.api.event.events.HighlightEvent;
 import dev.myriad.api.event.events.Render3DEvent;
 import dev.myriad.api.module.Categories;
 import dev.myriad.api.module.Module;
+import dev.myriad.api.module.Modules;
 import dev.myriad.api.render.BoxStyle;
 import dev.myriad.api.render.HighlightSettings;
 import dev.myriad.api.setting.ColorSetting;
@@ -43,14 +43,24 @@ public class BlockHighlight extends Module {
 		return mc.level.getBlockState(hit.getBlockPos()).isAir() ? null : hit.getBlockPos();
 	}
 
-	/** Low priority: after other modules' highlights, so this one is always its own outline, drawn over theirs. */
-	@Subscribe(inGame = true, priority = Priority.LOW)
+	/**
+	 * The block this highlights with its outline right now, or null: other modules' highlights leave it out (Storage
+	 * does), so it shows this look rather than theirs.
+	 */
+	public static BlockPos highlighted() {
+		BlockHighlight m = Modules.active(BlockHighlight.class);
+		return m != null && m.mode.get() == Mode.OUTLINE && m.inGame() ? m.target() : null;
+	}
+
+	/**
+	 * On the layer under other modules' highlights: the block you're looking at, often right in front of you, would
+	 * otherwise hide every highlight behind it on screen (all the chests behind a wall you look at).
+	 */
+	@Subscribe(inGame = true)
 	private void onHighlight(HighlightEvent.Shapes e) {
 		if (mode.get() != Mode.OUTLINE) return;
 		BlockPos pos = target();
-		// Grown a hair, so it's in front of other highlights of the same block (Storage's chest) rather than
-		// flickering against them where their faces meet.
-		if (pos != null) e.block(pos, outline.style(), color.argb(), 0.002);
+		if (pos != null) e.below().block(pos, outline.style(), color.argb());
 	}
 
 	@Subscribe(inGame = true)

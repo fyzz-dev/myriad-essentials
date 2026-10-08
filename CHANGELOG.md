@@ -3,6 +3,15 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.7
+
+Needs Myriad 0.2.5.
+
+- Block Highlight draws on a layer under other highlights, so the block you look at no longer hides Storage's (and
+  other modules') highlights behind it on screen: with Through Walls on, a wall you looked at hid every chest behind
+  it. Storage leaves out the block Block Highlight is on, which shows Block Highlight's look; the other half of a
+  double chest keeps Storage's.
+
 ## 0.2.6
 
 Needs Myriad 0.2.4 (it sends Elytra Fly's held pitch again after a setback; see its changelog).
