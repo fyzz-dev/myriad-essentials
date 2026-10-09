@@ -57,6 +57,14 @@ public final class ChestSwap {
 		boolean gliderOn = ItemInfo.isGlider(worn);
 		if (!gliderOn && !isChestArmor(worn)) return null;
 		Predicate<ItemStack> counterpart = gliderOn ? ChestSwap::isChestArmor : s -> ItemInfo.isGlider(s) && chestEquippable(s);
+		// Not gear No Break put away (an elytra about to wear out) unless it's all there is: the elytra has to go back on,
+		// and a chestplate worn a tick at a time in the air doesn't wear.
+		Pair pair = find(counterpart.and(s -> !Myriad.inventory().isSpared(s)));
+		return pair != null ? pair : find(counterpart);
+	}
+
+	private static Pair find(Predicate<ItemStack> counterpart) {
+		var p = mc().player;
 		if (counterpart.test(p.getOffhandItem())) return new Pair(InteractionHand.OFF_HAND, -1);
 		var inv = p.getInventory();
 		if (counterpart.test(inv.getItem(inv.getSelectedSlot()))) return new Pair(InteractionHand.MAIN_HAND, inv.getSelectedSlot());

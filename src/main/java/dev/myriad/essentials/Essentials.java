@@ -28,6 +28,7 @@ import dev.myriad.essentials.modules.player.AutoEat;
 import dev.myriad.essentials.modules.player.AutoTool;
 import dev.myriad.essentials.modules.player.InventoryTweaks;
 import dev.myriad.essentials.modules.player.MiddleClick;
+import dev.myriad.essentials.modules.player.NoBreak;
 import dev.myriad.essentials.modules.player.PacketMine;
 import dev.myriad.essentials.modules.player.Reach;
 import dev.myriad.essentials.modules.player.StackReplenish;
@@ -66,7 +67,7 @@ public final class Essentials implements MyriadAddon {
 			// Movement
 			new ElytraFly(), new ElytraTweaks(), new InventoryMove(), new Velocity(),
 			// Player
-			new AutoEat(), new AutoTool(), new InventoryTweaks(), new MiddleClick(), new PacketMine(), new Reach(), new StackReplenish(), new WallInteract(), new XCarry(),
+			new AutoEat(), new AutoTool(), new InventoryTweaks(), new MiddleClick(), new NoBreak(), new PacketMine(), new Reach(), new StackReplenish(), new WallInteract(), new XCarry(),
 			// Render
 			new ESP(), new BlockESP(), new BlockHighlight(), new Storage(), new Tracers(), new Nametags(), new NoRender(), new Tooltips(), new FullBright(), new FreeLook(), new Freecam(),
 			new ViewModel(), new Zoom(),

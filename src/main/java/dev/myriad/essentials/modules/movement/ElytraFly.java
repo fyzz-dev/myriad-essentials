@@ -83,12 +83,12 @@ public class ElytraFly extends Module {
 		.visible(() -> mode.get() == Mode.RECAST).build();
 
 	private enum State {
-		IDLE, BOUNCING, BRAKING, WALKING, MINING, PATHING, WAITING, BLOCKED
+		IDLE, BOUNCING, BRAKING, WALKING, MINING, PATHING, WAITING, BLOCKED, UNDER
 	}
 
-	/** What's ahead in the lane, and how far along it. */
+	/** What's ahead in the lane, and how far along it. CEILING: too low to hop under, but room to walk. */
 	private enum Hazard {
-		BLOCKS, HOLE, UNLOADED, STUCK
+		BLOCKS, CEILING, HOLE, UNLOADED, STUCK
 	}
 
 	private record Obstruction(Hazard hazard, double distance, List<BlockPos> blocks) {
@@ -114,6 +114,10 @@ public class ElytraFly extends Module {
 	private static final double SWEEP_STEP = 0.5;
 	/** What counts as in the way, above the floor: from this (carpets and snow layers don't) to the top of a hop. */
 	private static final double FLOOR_CLEARANCE = 0.2, HOP_CLEARANCE = 2.9;
+	/** A standing player's height: a ceiling above it (and below a hop's top) can be walked under, not bounced under. */
+	private static final double STAND_HEIGHT = 1.8;
+	/** Past a low ceiling, how much further a wall or a hole still counts as the thing to deal with first. */
+	private static final double UNDER_LOOK_AHEAD = 4;
 	/** Recast: ticks to stop after the server snaps you back; and how many snaps within the window mean it's stuck. */
 	private static final int FLAG_PAUSE = 5, SETBACK_LIMIT = 3, SETBACK_WINDOW = 100;
 	/** Recast: less than this far along the lane in this many ticks of trying means stuck. */
@@ -176,9 +180,14 @@ public class ElytraFly extends Module {
 	private int airTicks;
 	/** Recast: swapping the elytra with a chestplate (No Durability) to end glides that run long. */
 	private boolean chestMode;
-	/** Recast: ticks the server has been gliding without a stop; and the most before the chestplate ends it. */
+	/**
+	 * Recast: ticks since the server's glide last (re)started, counted until the server says it stopped, landings
+	 * included: it can miss one (the landing and the next hop's packets handled in the same server tick, with jitter or
+	 * low TPS) and glide on through the next hop. The chestplate ends it at {@link #LONG_GLIDE}, a few ticks of jitter
+	 * short of the 20 that wear the elytra.
+	 */
 	private int longGlide;
-	private static final int LONG_GLIDE = 12;
+	private static final int LONG_GLIDE = 14;
 	private float spoofYaw, spoofPitch;
 	/** Recast: the lane's direction (one of the eight highway directions, NaN until fixed) and a point on its line. */
 	private float lane = Float.NaN;
@@ -195,7 +204,7 @@ public class ElytraFly extends Module {
 	private final java.util.ArrayDeque<Long> setbacks = new java.util.ArrayDeque<>();
 	/** Recast: stuck, or set back too often: the lane counts as blocked until it's passed. */
 	private boolean forcedBlock;
-	private boolean warned;
+	private boolean warned, chestWarned;
 
 	public ElytraFly() {
 		super(Categories.MOVEMENT, "Elytra Fly", "Bounce along highways, or cross open country without fireworks.");
@@ -218,7 +227,7 @@ public class ElytraFly extends Module {
 		phase = Phase.DIVE;
 		cruiseY = groundY = Double.NaN;
 		landing = false;
-		wantJump = wantForward = spoofing = holdGlide = flagged = forcedBlock = warned = false;
+		wantJump = wantForward = spoofing = holdGlide = flagged = forcedBlock = warned = chestWarned = false;
 		letGo();
 		putElytraBack();
 		pathWait = pathTries = pauseTicks = progressCount = 0;
@@ -234,6 +243,7 @@ public class ElytraFly extends Module {
 		return switch (state) {
 			case BRAKING -> "Stopping";
 			case WALKING, MINING -> "Mining";
+			case UNDER -> "Low ceiling";
 			case PATHING -> "Baritone";
 			case WAITING -> "Loading";
 			case BLOCKED -> "Blocked";
@@ -495,11 +505,16 @@ public class ElytraFly extends Module {
 		if (gliding) holdGlide = true;
 		// With Elytra Tweaks' No Durability: the server wears the elytra once one of its glides lasts 20 ticks, which a
 		// hop never does unless the server misses the landing (packets bunched up) or you glide off an edge. A glide
-		// running that long gets the chestplate put on, so the server stops it first; it's opened again as usual.
+		// running that long gets the chestplate put on, so the server stops it first; it's opened again as usual. No
+		// chestplate in the hotbar or off hand: one is brought in from the inventory.
 		// Not while you eat (or use anything held): Grim stops it at every swap (see onUse).
 		chestMode = ElytraTweaks.noDurability() && ChestSwap.ready() && !mc.player.isUsingItem();
+		if (ElytraTweaks.noDurability() && ChestSwap.pair() == null && !ChestSwap.fetchChestplate() && !chestWarned) {
+			warn("No Durability needs a chestplate in your inventory to keep the bounce from wearing the elytra.");
+			chestWarned = true;
+		}
 		boolean cleared = GlideHold.cleared(this);
-		longGlide = cleared || !gliding || ground || !ChestSwap.elytraWorn() ? 0 : longGlide + 1;
+		longGlide = cleared || !gliding || !ChestSwap.elytraWorn() ? 0 : longGlide + 1;
 		if (cleared && !ground && airTicks >= 2) {
 			// The server stopped the glide (at the landing, or when the chestplate went on) and the client kept it up:
 			// start it again now you're back in the air, the held ping answers first (on the tick jump goes down) so
@@ -560,6 +575,7 @@ public class ElytraFly extends Module {
 					else blocked("Lane blocked by something unbreakable");
 				}
 			}
+			case CEILING -> walkUnder();
 			case HOLE -> {
 				if (walkRound) startPathing(ahead.distance());
 				else blocked("Hole in the lane");
@@ -608,6 +624,18 @@ public class ElytraFly extends Module {
 	private void giveUp(String why) {
 		warn(why + ": turning off");
 		disable();
+	}
+
+	/**
+	 * Under a ceiling too low to hop (a two-high tunnel, a roof over the lane), or on the way to one: walks along the
+	 * lane, sprinting, without mining anything, until there's room overhead to bounce on from.
+	 */
+	private void walkUnder() {
+		if (state == State.MINING) stopMining();
+		state = State.UNDER;
+		spoof(steeredYaw(), 0);
+		wantForward = true;
+		trackStuck();
 	}
 
 	/** Mines the block once it's in reach, walking along the lane up to it first. */
@@ -725,16 +753,22 @@ public class ElytraFly extends Module {
 		startPathing(along(pathTarget) - along(pos) + 4);
 	}
 
-	/** The first spot from {@code from} along the line (and the one after it) you could stand and bounce from. */
+	/**
+	 * The first spot from {@code from} along the line (and the one after it) you could stand and bounce from: with room
+	 * overhead to hop if there's one within reach, otherwise anywhere you can stand (it walks on from there under the
+	 * ceiling).
+	 */
 	private Vec3 clearSpotPast(double from) {
-		for (double t = Math.ceil(from); t < from + PASS_SEARCH; t++) {
-			if (standable(pointOnLine(t)) && standable(pointOnLine(t + 1))) return pointOnLine(t);
+		for (double height : new double[]{HOP_CLEARANCE, STAND_HEIGHT}) {
+			for (double t = Math.ceil(from); t < from + PASS_SEARCH; t++) {
+				if (standable(pointOnLine(t), height) && standable(pointOnLine(t + 1), height)) return pointOnLine(t);
+			}
 		}
 		return null;
 	}
 
-	private boolean standable(Vec3 feet) {
-		AABB body = new AABB(feet.x - 0.3, feet.y + FLOOR_CLEARANCE, feet.z - 0.3, feet.x + 0.3, feet.y + 1.8, feet.z + 0.3);
+	private boolean standable(Vec3 feet, double height) {
+		AABB body = new AABB(feet.x - 0.3, feet.y + FLOOR_CLEARANCE, feet.z - 0.3, feet.x + 0.3, feet.y + height, feet.z + 0.3);
 		if (!loaded(feet) || blocksIn(body, null)) return false;
 		BlockPos floor = BlockPos.containing(feet.x, feet.y - 0.5, feet.z);
 		return !mc.level.getBlockState(floor).getCollisionShape(mc.level, floor).isEmpty();
@@ -867,17 +901,22 @@ public class ElytraFly extends Module {
 
 	/**
 	 * The first thing in the lane within {@code range}: blocks the player's hitbox would run into sliding along it (a
-	 * little narrower than the hitbox, so brushing a wall doesn't count; from just above the floor to the top of a hop),
-	 * a hole at least two deep (one you'd land in and not hop out of), or chunks that haven't loaded. Null if it's clear.
+	 * little narrower than the hitbox, so brushing a wall doesn't count; from just above the floor to a standing
+	 * player's height), a hole at least two deep (one you'd land in and not hop out of), or chunks that haven't loaded.
+	 * A ceiling that only a hop would reach is walked under rather than mined; it's what's ahead unless one of the
+	 * others comes just after it. Null if it's clear.
 	 */
 	private Obstruction scanAhead(double range) {
 		Vec3 dir = laneDir(), step = dir.scale(SWEEP_STEP);
 		AABB box = mc.player.getBoundingBox();
 		double floor = floorY();
-		AABB body = new AABB(box.minX + 0.2, floor + FLOOR_CLEARANCE, box.minZ + 0.2, box.maxX - 0.2, floor + HOP_CLEARANCE, box.maxZ - 0.2);
+		AABB body = new AABB(box.minX + 0.2, floor + FLOOR_CLEARANCE, box.minZ + 0.2, box.maxX - 0.2, floor + STAND_HEIGHT, box.maxZ - 0.2);
+		AABB headroom = new AABB(body.minX, floor + STAND_HEIGHT, body.minZ, body.maxX, floor + HOP_CLEARANCE, body.maxZ);
 		AABB feet = new AABB(box.minX, floor - 2, box.minZ, box.maxX, floor - 0.5, box.maxZ);
 		List<BlockPos> hits = new ArrayList<>();
+		Obstruction ceiling = null;
 		for (double d = 0; d <= range; d += SWEEP_STEP) {
+			if (ceiling != null && d > ceiling.distance() + UNDER_LOOK_AHEAD) return ceiling;
 			Vec3 at = dir.scale(d);
 			if (!loaded(mc.player.position().add(at))) return new Obstruction(Hazard.UNLOADED, d, List.of());
 			if (blocksIn(body.move(at).expandTowards(step), hits)) {
@@ -885,13 +924,14 @@ public class ElytraFly extends Module {
 				hits.sort(Comparator.comparingDouble(pos -> pos.distToCenterSqr(eye)));
 				return new Obstruction(Hazard.BLOCKS, d, hits);
 			}
+			if (ceiling == null && blocksIn(headroom.move(at).expandTowards(step), null)) ceiling = new Obstruction(Hazard.CEILING, d, List.of());
 			// The floor: nothing to stand on for two blocks down under the whole hitbox. Every quarter block, so even a
 			// hole just wider than you (one block) is found wherever you are.
 			if (d >= 1 && (!blocksIn(feet.move(at), null) || !blocksIn(feet.move(at.add(step.scale(0.5))), null))) {
 				return new Obstruction(Hazard.HOLE, d, List.of());
 			}
 		}
-		return null;
+		return ceiling;
 	}
 
 	/** Whether anything in {@code box} is in the way (see {@link #obstructs}); each such block is added to {@code hits}. */

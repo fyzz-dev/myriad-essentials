@@ -10,7 +10,7 @@ Needs JDK 21 for the server (path in `versions.env`) and Python 3.
 
 | Matches | Unknown, left at defaults |
 |---|---|
-| Paper 1.21.4 with ViaVersion in front for newer clients | 2b2t's Grim version and its config (it may be a fork) |
+| Paper 1.21.4 with ViaVersion and ViaBackwards, so newer and older clients join | 2b2t's Grim version and its config (it may be a fork) |
 | GrimAC, current build | Whether 2b2t turns on Grim's experimental checks (`./start.sh --experimental` to try with them) |
 | 2b2t's world seed, hard survival, PvP, no spawn protection, Nether and End | Paper tweaks, the queue proxy, plugins |
 | About 2b2t's ping, with `./lag.py` | |
@@ -21,12 +21,12 @@ this setup (it normally waits for several); that only changes the messages, not 
 ## Use
 
 ```bash
-./setup.sh                 # once: downloads Paper, Grim and ViaVersion into server/ (pinned in versions.env)
+./setup.sh                 # once: downloads Paper, Grim, ViaVersion and ViaBackwards into server/ (pinned in versions.env)
 ./start.sh                 # starts in the background (--experimental for Grim's experimental checks)
 ./lag.py 100 15            # optional, in another terminal: localhost:25566 with 100 ms each way, 15 ms jitter
 
 # from the repo root: the dev client, straight into the server
-./gradlew runClient -PquickPlayServer=localhost:25565 -Pusername=GrimTester
+./gradlew runClient -PquickPlayServer=localhost:25565 -Pusername=GrimTester   # as 1.20.4 through ViaFabricPlus; -Pvia=native for 26.2
 ./cmd "op GrimTester"      # once; ops still get checked (Grim only exempts grim.exempt), and see alerts in chat
 ```
 
@@ -50,8 +50,15 @@ Then a test is: set the scene, mark the log, act, read the flags.
 
 The client steps come from `DevConsole` in core, which dev runs turn on: Myriad commands (`.toggle kill_aura on`),
 server commands as the player (`/gamemode survival`), `hold forward,sprint,jump 40`, `look <yaw> <pitch>`,
-`select <1-9>`, `attack`, `use`, `wait <ticks>`, `respawn`, `status`, and `selftest [ticks] [-module]`, which turns
-every module on for a while and off again and reports any that failed or whose handlers threw.
+`select <1-9>`, `attack`, `use`, `wait <ticks>`, `respawn`, `status`, `connect <host:port>` (from a disconnect
+screen: `./cmd "kick GrimTester"` first, then `connect localhost:25566` to play through `./lag.py`), and
+`selftest [ticks] [-module]`, which turns every module on for a while and off again and reports any that failed or
+whose handlers threw.
+
+Grim simulates each player as the version they joined with, so test as 1.20.4 (the default) and, for anything
+version-dependent, again with `-Pvia=native`; `./cmd "viaversion list"` shows what the server sees. Elytra wear needs
+ping to show: a landing the server misses (its packet handled in the same server tick as the next hop's) lets its
+glide run on, so run the elytra tests through `./lag.py 100 80` too (and `./cmd "tick rate 14"` for 2b2t's TPS).
 
 ## The Essentials suite
 

@@ -16,6 +16,12 @@ repositories {
 		name = "Myriad"
 		url = "https://fyzz-dev.github.io/myriad"
 	}
+	// ViaFabricPlus for the dev client only.
+	maven {
+		name = "Modrinth"
+		url = "https://api.modrinth.com/maven"
+		content { includeGroup "maven.modrinth" }
+	}
 }
 
 dependencies {
@@ -31,7 +37,28 @@ dependencies {
 	} else {
 		implementation "dev.myriad:myriad:${project.myriad_version}"
 	}
+
+	// Most 2b2t players join through ViaFabricPlus as an older version, so the dev client does too (see `via` below).
+	localRuntime "maven.modrinth:viafabricplus:${project.viafabricplus_version}"
 }
+
+// The protocol the dev client joins servers with, through ViaFabricPlus: 1.20.4 by default (what most 2b2t players
+// use), `-Pvia=native` for the client's own. Singleplayer is never translated.
+def viaProtocol = project.findProperty("via")?.toString() ?: "1.20.4"
+def selectViaProtocol = tasks.register("selectViaProtocol") {
+	def settings = file("run/config/viafabricplus/settings.json")
+	inputs.property("via", viaProtocol)
+	outputs.upToDateWhen { false }
+	doLast {
+		def json = settings.exists() ? new groovy.json.JsonSlurper().parse(settings) : [:]
+		json.general = (json.general ?: [:]) + [save_selected_protocol_version: true]
+		json.selected_protocol_version = viaProtocol == "native" ? project.minecraft_version : viaProtocol
+		settings.parentFile.mkdirs()
+		settings.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))
+		logger.lifecycle("ViaFabricPlus joins servers as ${json.selected_protocol_version}")
+	}
+}
+tasks.matching { it.name == "runClient" }.configureEach { dependsOn selectViaProtocol }
 
 loom {
 	runs {

@@ -9,7 +9,7 @@ Needs the server (./start.sh) and the dev client in game as GrimTester (op). Eac
 them on a stone floor around x=1000 so they don't touch the rest of the world), runs client steps, then checks the
 result on the server and that Grim flagged nothing. Exit code 1 if anything failed.
 """
-import os, re, subprocess, sys, time
+import math, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 P = "GrimTester"
@@ -128,9 +128,11 @@ def t_scaffold():
     cmd("fill 980 99 -8 1040 99 20 air", f"item replace entity {P} hotbar.0 with dirt 64")
     # The test server's Grim checks where you look when placing (RotationPlace); 2b2t's doesn't.
     out = client("select 1", ".set scaffold rotate true", ".toggle scaffold on", "wait 2", "hold forward,sprint 30", "wait 32", "status", ".toggle scaffold off", ".set scaffold rotate false")
-    placed = sum(passed(f"if block 1000 99 {z} dirt") for z in range(-7, -1))
-    y = position()[1]
-    return placed >= 5 and y >= 99.9, f"{placed}/6 blocks bridged, y={y:.2f}"
+    # Every block it walked over from the floor's edge (z=-8), however far it got (Rotate breaks sprint at each one).
+    _, y, z = position()
+    path = range(-7, math.floor(z) + 1)
+    placed = sum(passed(f"if block 1000 99 {bz} dirt") for bz in path)
+    return len(path) >= 4 and placed == len(path) and y >= 99.9, f"{placed}/{len(path)} blocks bridged under the path, y={y:.2f}"
 
 
 def t_offhand():
@@ -202,21 +204,20 @@ def t_elytra_altitude():
     x0 = position()[0]
     client(".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 200", ".toggle elytra_fly off", timeout=90)
     x, y, _ = position()
-    wear = re.search(r"Damage: (\d+)", data("Inventory[{Slot:102b}]"))
+    wear = re.search(r"damage\"?: (\d+)", data("Inventory[{Slot:102b}]"))
     return x - x0 > 60 and y > 150, f"{x - x0:.0f} blocks in 10 s, y={y:.0f}, elytra damage {wear.group(1) if wear else 0}"
 
 
 def t_elytra_no_durability():
     client("respawn", ".panic", "wait 20")
     cmd(f"clear {P}", f"gamemode survival {P}", f"item replace entity {P} armor.chest with elytra", f"item replace entity {P} hotbar.1 with diamond_chestplate",
-        f"tp {P} 3000.5 230 0.5 -90 0")
+        f"tp {P} 3000.5 300 0.5 -90 0")
     time.sleep(1.5)
     client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 200",
         ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=90)
-    wear = re.search(r"Damage: (\d+)", data("Inventory[{Slot:102b}]") + data("Inventory[{Slot:1b}]"))
-    damage = int(wear.group(1)) if wear else 0
+    damage = elytra_damage()
     hp, x = health(), position()[0]
-    return damage <= 2 and hp > 0 and x > 3060, f"elytra damage {damage} after 10 s of flight, {x - 3000:.0f} blocks, health {hp:.0f}"
+    return 0 <= damage <= 2 and hp > 0 and x > 3060, f"elytra damage {damage} after 10 s of flight, {x - 3000:.0f} blocks, health {hp:.0f}"
 
 
 def health():
@@ -243,13 +244,16 @@ def t_elytra_no_durability_landing():
     return hp >= 20 and y < 152 and x > 5000, f"landed at y={y:.1f} after {x - 5000:.0f} blocks, health {hp:.1f}"
 
 
-def recast_highway(*setup):
-    """A 3-wide obsidian highway at y=200 from x=4000 east, the tester on it facing east, then `setup` commands."""
+def recast_highway(*setup, end=4400):
+    """A 3-wide obsidian highway at y=200 from x=4000 to `end`, the tester on it facing east, then `setup` commands."""
     client("respawn", ".panic", "wait 20")
-    cmd("forceload add 3990 -8 4400 8")
+    cmd(f"forceload add 3990 -8 {end} 8")
     cmd(f"tp {P} 4000.5 201 0.5 -90 0")
     time.sleep(1.5)
-    cmd("fill 3990 200 -3 4400 206 3 air", "fill 3990 200 -1 4400 200 1 obsidian", f"clear {P}", f"gamemode survival {P}", f"effect clear {P}",
+    # In pieces: a fill takes at most 32768 blocks.
+    for x in range(3990, end, 400):
+        cmd(f"fill {x} 200 -3 {min(x + 399, end)} 206 3 air", f"fill {x} 200 -1 {min(x + 399, end)} 200 1 obsidian")
+    cmd(f"clear {P}", f"gamemode survival {P}", f"effect clear {P}",
         f"effect give {P} saturation 1 20 true", f"item replace entity {P} armor.chest with elytra", f"tp {P} 4000.5 201 0.5 -90 0", *setup)
     time.sleep(1)
 
@@ -269,6 +273,84 @@ def t_elytra_recast_obstacles():
     x, y, _ = position()
     mined = "passed" in cmd("execute if block 4150 201 0 air")
     return mined and 4160 < x < 4250 and y > 200.5, f"chest {'mined' if mined else 'still there'}, stopped at x={x:.1f} (hole at 4250)"
+
+
+def elytra_damage():
+    """The elytra's damage, worn (chest) or swapped off into the hotbar; -1 if it's gone."""
+    for slot in ("102b", "0b", "1b", "2b"):
+        d = data(f"Inventory[{{Slot:{slot}}}]")
+        if "elytra" in d:
+            m = re.search(r"damage\"?: (\d+)", d)
+            return int(m.group(1)) if m else 0
+    return -1
+
+
+def t_elytra_recast_no_durability():
+    # 30 s of bouncing with No Durability: the server's glides must never last the 20 ticks that wear the elytra.
+    recast_highway(f"item replace entity {P} hotbar.1 with diamond_chestplate", end=4980)
+    client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode recast", ".set elytra_fly obstacles stop", "wait 10",
+        ".toggle elytra_fly on", "wait 600", ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=120)
+    x = position()[0]
+    damage = elytra_damage()
+    return 0 <= damage <= 1 and x - 4000 > 300, f"elytra damage {damage} after {x - 4000:.0f} blocks of bouncing (30 s)"
+
+
+def t_elytra_recast_low_ceiling():
+    # Turned on under a two-high roof: it walks out from under it (mining nothing) and bounces on from there.
+    recast_highway("fill 3995 203 -1 4030 203 1 stone", f"item replace entity {P} hotbar.0 with netherite_pickaxe[enchantments={{efficiency:5}}]")
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles mine", "wait 10", ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", "wait 20", timeout=90)
+    x = position()[0]
+    roof = sum(passed(f"if block {bx} 203 0 stone") for bx in range(3995, 4031))
+    return roof == 36 and x > 4150, f"{x - 4000:.0f} blocks in 15 s, {36 - roof} roof blocks mined"
+
+
+def damage(slot):
+    """The damage of the item in an inventory slot number as the server stores it; -1 if empty."""
+    d = data(f"Inventory[{{Slot:{slot}b}}]")
+    if not d: return -1
+    m = re.search(r"damage\"?: (\d+)", d)
+    return int(m.group(1)) if m else 0
+
+
+def t_no_break_tools():
+    # A pickaxe with 6 uses left in hand and a fresh one in the inventory: they swap places.
+    reset()
+    cmd(f"item replace entity {P} hotbar.0 with netherite_pickaxe[damage=2025]", f"item replace entity {P} inventory.5 with diamond_pickaxe")
+    client("select 1", ".set no_break tools true", ".toggle no_break on", "wait 20")
+    swapped = item(0) == "minecraft:diamond_pickaxe" and item(14) == "minecraft:netherite_pickaxe"
+    # Now with nothing to swap in: it's put away, and mining (Packet Mine picks the tool) leaves it there.
+    cmd(f"clear {P}", f"item replace entity {P} hotbar.0 with netherite_pickaxe[damage=2025]", "setblock 1003 100 0 dirt")
+    client("wait 20", ".toggle packet_mine on", "look -90 20.47", "wait 2", "attack", "wait 40", ".toggle packet_mine off", ".toggle no_break off")
+    spared = item(0) == "" and item(9) == "minecraft:netherite_pickaxe" and damage(9) == 2025
+    mined = passed("if block 1003 100 0 air")
+    return swapped and spared and mined, f"{'swapped' if swapped else 'not swapped'}; alone: {'put away and left alone' if spared else f'slot 0 {item(0)}, damage {damage(9)}'}, dirt {'mined' if mined else 'not mined'}"
+
+
+def t_no_break_armor():
+    # A chestplate with 8 uses left and a better one carried: swapped. Leggings with 5 left and none spare: taken off.
+    # Auto Armor, also on, must not put them back.
+    reset()
+    cmd(f"item replace entity {P} armor.chest with diamond_chestplate[damage=520]", f"item replace entity {P} armor.legs with diamond_leggings[damage=490]",
+        f"item replace entity {P} inventory.5 with netherite_chestplate")
+    client(".toggle auto_armor on", ".toggle no_break on", "wait 40", ".toggle no_break off", ".toggle auto_armor off")
+    chest, legs = item(102), item(101)
+    ok = chest == "minecraft:netherite_chestplate" and legs == ""
+    return ok, f"chest {chest or 'empty'}, legs {legs or 'empty'}"
+
+
+def t_no_break_elytra():
+    # Flying with an elytra 12 uses from wearing out and a fresh one carried: swapped in mid-air, still flying.
+    client("respawn", ".panic", "wait 20")
+    cmd(f"clear {P}", f"gamemode survival {P}", f"item replace entity {P} armor.chest with elytra[damage=420]", f"item replace entity {P} inventory.5 with elytra",
+        f"tp {P} 6000.5 230 0.5 -90 0")
+    time.sleep(1.5)
+    sh("flags", "mark")
+    client(".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 20", ".toggle no_break on", "wait 40", "status", ".toggle no_break off", ".toggle elytra_fly off",
+        timeout=60)
+    y = position()[1]
+    worn, spare = damage(102), damage(14)
+    # The fresh one wears a point a second for the rest of the flight.
+    return 0 <= worn <= 3 and 420 <= spare <= 422 and y > 120, f"worn elytra damage {worn}, put away {spare}, y={y:.0f}"
 
 
 def t_elytra_wearing_out():
@@ -342,9 +424,14 @@ TESTS = [
     ("auto_eat choice", t_auto_eat_choice),
     ("auto_disconnect", t_auto_disconnect),
     ("stack_replenish", t_stack_replenish),
+    ("no_break tools", t_no_break_tools),
+    ("no_break armor", t_no_break_armor),
+    ("no_break elytra", t_no_break_elytra),
     ("elytra_fly altitude", t_elytra_altitude),
     ("elytra_fly recast", t_elytra_recast),
     ("elytra_fly recast obstacles", t_elytra_recast_obstacles),
+    ("elytra_fly recast no durability", t_elytra_recast_no_durability),
+    ("elytra_fly recast low ceiling", t_elytra_recast_low_ceiling),
     ("elytra_tweaks no durability", t_elytra_no_durability),
     ("elytra_tweaks no durability landing", t_elytra_no_durability_landing),
     ("elytra_fly altitude wearing out", t_elytra_wearing_out),

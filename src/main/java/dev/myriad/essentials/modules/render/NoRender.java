@@ -48,6 +48,7 @@ public class NoRender extends Module {
 	public final BoolSetting xpBar = sgHud.bool("XP Bar").build();
 	public final BoolSetting itemName = sgHud.bool("Item Name").description("No item name above the hotbar when switching.").build();
 	public final BoolSetting scoreboard = sgHud.bool("Scoreboard").description("No scoreboard on the right of the screen.").build();
+	public final BoolSetting chat = sgHud.bool("Chat").description("No chat messages on screen; they still show while chat is open.").build();
 
 	private final SettingGroup sgWorld = settings.group("World");
 	public final BoolSetting armor = sgWorld.bool("Armor").description("No armour on players and mobs.").build();

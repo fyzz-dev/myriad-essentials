@@ -3,6 +3,34 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.10
+
+Needs Myriad 0.2.7 (`Inventory.spare`, which No Break uses).
+
+- No Break (new): armour, elytras and the tools and weapons in your hands are swapped out before they break, so they can
+  be mended later. Another piece of the same kind with more uses left goes on (another elytra in mid-air, another
+  pickaxe for the pickaxe); with none, armour comes off and a tool goes into the inventory, while the elytra you're
+  flying with stays on until you land. Armor Uses (20) and Tool Uses (10) set when. What it puts away is left alone by
+  Auto Armor, Auto Tool, Elytra Tweaks and core's tool picking for breaks (Packet Mine, Recast's mining).
+- Elytra Fly's Recast with No Durability no longer wears the elytra with ping. The server can miss a landing (its
+  packet handled in the same server tick as the next hop's, with jitter or low TPS) and glide on through the next hop;
+  the cut that ends a long glide with the chestplate counted from your last touchdown, so it never came. It now counts
+  from the glide's start until the server stops it. Measured as 1.20.4 through 200 ms of ping with 80 ms of jitter:
+  30 s of bouncing wore the elytra by 2 (chestplate in the hotbar) and 5 (chestplate only in the inventory) before,
+  0 after, also at 14 TPS.
+- Recast with No Durability brings a chestplate from the inventory into the hotbar, as Elytra Tweaks does, and says so
+  if there's none.
+- Recast under a ceiling too low to hop (a two-high tunnel, a roof over the lane) walks along the lane, sprinting, until
+  there's room overhead, then bounces on, in every Obstacles mode. Before, Stop waited forever, Mine dug the ceiling out
+  until it had about 34 clear blocks ahead, and Baritone could walk you to such a spot and get stuck there; Baritone's
+  spot past an obstacle now has room to hop when there's one.
+- No Render: Chat hides chat messages on screen; they still show while chat is open.
+- Dev client: ViaFabricPlus, joining servers as 1.20.4 like most 2b2t players (`-Pvia=native` for 26.2).
+- Grim test server: ViaBackwards, so 1.20.4 clients can join. Suite: the elytra wear checks read the damage the server
+  stores (they read nothing and always passed); tests for No Break, Recast's wear and a low ceiling; Scaffold judged on
+  the path it walked (slower as 1.20.4); Elytra Tweaks' No Durability test flies higher, clear of the hills its fall
+  guard rightly waits for.
+
 ## 0.2.9
 
 Needs Myriad 0.2.6.

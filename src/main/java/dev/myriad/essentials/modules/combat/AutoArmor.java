@@ -120,7 +120,8 @@ public class AutoArmor extends Module {
 	/** Higher is better; 0 for nothing worth wearing. */
 	private double score(ItemStack s, EquipmentSlot slot) {
 		if (s.isEmpty()) return 0;
-		if (ItemInfo.isBound(s)) return 0;
+		// No Break put it away to be mended.
+		if (ItemInfo.isBound(s) || Myriad.inventory().isSpared(s)) return 0;
 		if (s.isDamageableItem() && ItemInfo.durabilityFraction(s) * 100 < preserve.get()) return 0.01;
 		if (slot == EquipmentSlot.CHEST) {
 			boolean elytra = ItemInfo.canGlide(s);

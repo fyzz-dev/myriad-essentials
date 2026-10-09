@@ -8,7 +8,9 @@ source versions.env
 if [[ "${1:-}" == "--update" ]]; then
 	curl -s "https://fill.papermc.io/v3/projects/paper/versions/$PAPER_VERSION/builds/latest" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("paper     ", d["downloads"]["server:default"]["url"])'
 	curl -s "https://api.modrinth.com/v2/project/grimac/version?loaders=%5B%22paper%22%5D&game_versions=%5B%22$PAPER_VERSION%22%5D" | python3 -c 'import json,sys; v=json.load(sys.stdin)[0]; print("grim      ", v["files"][0]["url"])'
-	curl -s "https://api.modrinth.com/v2/project/viaversion/version?loaders=%5B%22paper%22%5D" | python3 -c 'import json,sys; v=[v for v in json.load(sys.stdin) if v["version_type"]=="release"][0]; print("viaversion", v["files"][0]["url"], v["game_versions"][-1])'
+	for via in viaversion viabackwards; do
+		curl -s "https://api.modrinth.com/v2/project/$via/version?loaders=%5B%22paper%22%5D" | python3 -c 'import json,sys; v=[v for v in json.load(sys.stdin) if v["version_type"]=="release"][0]; print(sys.argv[1].ljust(12), v["files"][0]["url"], v["game_versions"][-1])' "$via"
+	done
 	exit 0
 fi
 
@@ -17,11 +19,16 @@ fetch() { [[ -f "$2" ]] || { echo "downloading $(basename "$2")"; curl -sSfL -o 
 fetch "$PAPER_URL" server/paper.jar
 rm -f server/plugins/grimac-*.jar.old
 fetch "$GRIM_URL" "server/plugins/$(basename "$GRIM_URL")"
-fetch "$VIAVERSION_URL" "server/plugins/$(basename "$VIAVERSION_URL")"
+# One build of each Via plugin: drop the jars of other versions.
+for url in "$VIAVERSION_URL" "$VIABACKWARDS_URL"; do
+	name=$(basename "$url")
+	for old in server/plugins/"${name%%-*}"-*.jar; do [[ -f "$old" && "$(basename "$old")" != "$name" ]] && rm "$old"; done
+	fetch "$url" "server/plugins/$name"
+done
 
 echo "eula=true" > server/eula.txt
 
-# 2b2t-like where it's public knowledge: 1.21.4 behind ViaVersion, Grim, hard survival, the 2b2t seed, no spawn
+# 2b2t-like where it's public knowledge: 1.21.4 behind ViaVersion and ViaBackwards (older clients too), Grim, hard survival, the 2b2t seed, no spawn
 # protection, Nether and End on. Offline mode so the dev client (no Microsoft login) can join.
 cat > server/server.properties <<PROPS
 online-mode=false
