@@ -3,6 +3,31 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.13
+
+Needs Myriad 0.2.8.
+
+- Offhand takes a totem from the hotbar first while you move, so it goes over with the swap-hands key at once; one
+  from the main inventory waits a tick for a click Grim takes. The spare Hotbar Totem is refilled only while you aren't
+  moving.
+- Auto Armor no longer misses the still tick it asks for (its delay started on the request), so it equips every piece
+  while you sprint.
+- Elytra Fly Recast, Clear with Baritone: one hand-over per obstacle. Baritone gets a goal at the first clear spot past
+  it and gets you there however it can, mining and placing (allowed for the hand-over, and with the building blocks you
+  carry, obsidian say, added to the ones it builds with, all put back after). Once you're there you face along the lane
+  again, at the pitch you had, and bouncing goes on. If Baritone stops short, or gets no closer for 15 s, the lane
+  counts as blocked (If Blocked: wait or disconnect). Before, a stall stopped Baritone and gave it a new goal a few
+  blocks on, up to three times (its goal flickering on and off), then fell back to mining and filling itself, and it
+  left you looking wherever Baritone had turned you. Mining and filling itself is now only without Baritone.
+- Air Place goes as far along your look as the server takes, up to the new Distance maximum of 6: farther than that,
+  it comes back to the farthest space your look enters within reach (about 5 blocks ahead). It used to place exactly
+  Distance away, capped at 4.5, and refused that whenever the space's centre was past 4.5, so it seemed to work or
+  not depending on where you looked.
+- Grim test suite: offhand sprinting (main inventory and hotbar), auto armor sprinting, stack replenish walking and
+  kill aura walking; the dev console's `hold sprint` presses the sprint key itself, which ViaFabricPlus as 1.20.4
+  needs to sprint. The arena is cleared in two fills: one was over the server's 32768-block limit and failed, so
+  blocks from earlier tests stayed.
+
 ## 0.2.12
 
 Needs Myriad 0.2.7.

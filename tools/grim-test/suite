@@ -13,8 +13,9 @@ import math, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 P = "GrimTester"
-# The test floor: stone at y=99, air above, around x=1000 z=0.
-ARENA = ["fill 980 99 -20 1040 99 20 stone", "fill 980 100 -20 1040 115 20 air"]
+# The test floor: stone at y=99, air above, around x=1000 z=0. The air in two fills: one would be over the server's
+# 32768-block limit, fail, and leave what earlier tests built.
+ARENA = ["fill 980 99 -20 1040 99 20 stone", "fill 980 100 -20 1040 107 20 air", "fill 980 108 -20 1040 115 20 air"]
 
 
 def sh(*args, timeout=180):
@@ -115,6 +116,20 @@ def t_kill_aura_switch():
     return killed and back and shown and shown.group(1).endswith("dirt"), f"killed={killed}, hand showed {shown.group(1) if shown else '?'}, sword back in inventory={back}"
 
 
+def t_kill_aura_walking():
+    # Husks beside the path, so it turns you while you walk diagonally: walking follows the sent yaw (the move fix),
+    # which as 1.20.4 has to move exactly as that version did (a diagonal isn't normalised there).
+    reset()
+    cmd(f"item replace entity {P} hotbar.0 with diamond_sword")
+    for x in range(1004, 1030, 4):
+        cmd(f'summon husk {x}.5 100 2.5 {{NoAI:1b,Health:1000f,attributes:[{{id:"minecraft:max_health",base:1000}}],Tags:["suite"]}}')
+    time.sleep(0.5)
+    sh("flags", "mark")
+    client("select 1", ".set kill_aura weapon holding", ".toggle kill_aura on", "hold forward,sprint 80", "wait 82", ".toggle kill_aura off")
+    x, _, _ = position()
+    return x > 1012, f"walked to x={x:.1f} beside the husks"
+
+
 def t_packet_mine():
     reset()
     cmd("setblock 1003 100 0 deepslate", f"item replace entity {P} hotbar.0 with netherite_pickaxe", f"item replace entity {P} hotbar.1 with dirt 16")
@@ -140,6 +155,38 @@ def t_offhand():
     cmd(f"item replace entity {P} inventory.5 with totem_of_undying")
     client(".toggle offhand on", "wait 20", ".toggle offhand off")
     return item(-106) == "minecraft:totem_of_undying", f"off hand holds {item(-106) or 'nothing'}"
+
+
+def t_offhand_sprinting():
+    # Grim cancels a click while you sprint (and, from 1.21.2, while you walk) without telling the client: the totem has
+    # to wait for a still tick, or the client shows one the server doesn't have.
+    reset()
+    cmd(f"item replace entity {P} inventory.5 with totem_of_undying")
+    client("hold forward,sprint 40", "wait 5", ".toggle offhand on", "wait 35", ".toggle offhand off")
+    return item(-106) == "minecraft:totem_of_undying" and item(14) == "", f"off hand holds {item(-106) or 'nothing'}"
+
+
+def t_offhand_hotbar_sprinting():
+    # From the hotbar it goes over with the swap-hands key, which isn't a click: no waiting.
+    reset()
+    cmd(f"item replace entity {P} hotbar.4 with totem_of_undying")
+    client("hold forward,sprint 40", "wait 5", ".toggle offhand on", "wait 35", ".toggle offhand off")
+    return item(-106) == "minecraft:totem_of_undying" and item(4) == "", f"off hand holds {item(-106) or 'nothing'}, hotbar slot 5 {item(4) or 'empty'}"
+
+
+def t_auto_armor_sprinting():
+    reset()
+    cmd(*(f"item replace entity {P} inventory.{i} with diamond_{p}" for i, p in enumerate(["helmet", "chestplate", "leggings", "boots"])))
+    client("hold forward,sprint 60", "wait 2", ".toggle auto_armor on", "wait 58", ".toggle auto_armor off")
+    worn = [item(s) for s in (100, 101, 102, 103)]
+    return all(w.startswith("minecraft:diamond_") for w in worn), "worn: " + ", ".join(w.removeprefix("minecraft:") or "-" for w in worn)
+
+
+def t_stack_replenish_walking():
+    reset()
+    cmd(f"item replace entity {P} hotbar.0 with cobblestone 1", f"item replace entity {P} inventory.0 with cobblestone 64")
+    client("hold forward 40", "wait 2", ".toggle stack_replenish on", "wait 38", ".toggle stack_replenish off")
+    return count(0) > 1, f"hotbar stack now {count(0)}"
 
 
 def t_auto_armor():
@@ -378,7 +425,8 @@ def t_elytra_recast_full_hotbar():
 
 
 def t_elytra_recast_fill_hole():
-    # A 3-deep hole across the lane and no Baritone: Clear fills it at floor level with blocks from the hotbar and bounces on.
+    # A 3-deep hole across the lane: Clear fills it at floor level with blocks from the hotbar (without Baritone), or
+    # Baritone bridges it with them, and bounces on.
     recast_highway("fill 4100 197 -1 4101 200 1 air", f"item replace entity {P} hotbar.2 with obsidian 64")
     client(".set elytra_fly mode recast", ".set elytra_fly obstacles clear", "wait 10", ".toggle elytra_fly on", "wait 400", ".toggle elytra_fly off", "wait 20", timeout=90)
     x, y, _ = position()
@@ -543,10 +591,15 @@ TESTS = [
     ("selftest (every module)", t_selftest),
     ("kill_aura holding", t_kill_aura_holding),
     ("kill_aura switch", t_kill_aura_switch),
+    ("kill_aura walking", t_kill_aura_walking),
     ("packet_mine", t_packet_mine),
     ("scaffold", t_scaffold),
     ("offhand", t_offhand),
     ("auto_armor", t_auto_armor),
+    ("offhand sprinting", t_offhand_sprinting),
+    ("offhand hotbar sprinting", t_offhand_hotbar_sprinting),
+    ("auto_armor sprinting", t_auto_armor_sprinting),
+    ("stack_replenish walking", t_stack_replenish_walking),
     ("auto_eat", t_auto_eat),
     ("auto_eat choice", t_auto_eat_choice),
     ("auto_disconnect", t_auto_disconnect),

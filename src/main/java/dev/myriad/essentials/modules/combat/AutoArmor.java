@@ -88,20 +88,25 @@ public class AutoArmor extends Module {
 			return;
 		}
 		for (EquipmentSlot slot : SLOTS) {
-			if (equipBest(slot)) {
-				wait = delay.get();
-				return;
-			}
+			Step step = equipBest(slot);
+			if (step == Step.NONE) continue;
+			// Waiting for a still tick goes on next tick, not after the delay, or the tick is missed.
+			if (step == Step.EQUIPPED) wait = delay.get();
+			return;
 		}
 	}
 
-	/** Puts on a better piece for {@code slot} if you have one; true if it swapped. */
-	private boolean equipBest(EquipmentSlot slot) {
+	private enum Step {
+		NONE, EQUIPPED, WAITING
+	}
+
+	/** Puts on a better piece for {@code slot} if you have one. */
+	private Step equipBest(EquipmentSlot slot) {
 		ItemStack worn = mc.player.getItemBySlot(slot);
-		if (slot == EquipmentSlot.CHEST && awaitLanding.get() && mc.player.isFallFlying() && ItemInfo.canGlide(worn)) return false;
+		if (slot == EquipmentSlot.CHEST && awaitLanding.get() && mc.player.isFallFlying() && ItemInfo.canGlide(worn)) return Step.NONE;
 		// Elytra Tweaks takes the elytra off for a moment while you fly; it puts it back itself.
-		if (slot == EquipmentSlot.CHEST && ElytraTweaks.holdsChest()) return false;
-		if (ItemInfo.isBound(worn)) return false;
+		if (slot == EquipmentSlot.CHEST && ElytraTweaks.holdsChest()) return Step.NONE;
+		if (ItemInfo.isBound(worn)) return Step.NONE;
 		double current = score(worn, slot);
 		int best = -1;
 		double bestScore = current;
@@ -114,10 +119,10 @@ public class AutoArmor extends Module {
 				best = i;
 			}
 		}
-		if (best < 0) return false;
+		if (best < 0) return Step.NONE;
 		// Grim (2b2t) cancels a click while you move: your keys are let go for a tick first.
-		if (!Myriad.inventory().prepareClick()) return true;
-		return Myriad.inventory().move(best, ItemInfo.inventoryIndex(slot));
+		if (!Myriad.inventory().prepareClick()) return Step.WAITING;
+		return Myriad.inventory().move(best, ItemInfo.inventoryIndex(slot)) ? Step.EQUIPPED : Step.WAITING;
 	}
 
 	/** Higher is better; 0 for nothing worth wearing. */

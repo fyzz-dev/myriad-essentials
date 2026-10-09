@@ -107,7 +107,8 @@ public class Offhand extends Module {
 		}
 		if (slot < 0) return;
 		int from = slot;
-		// A totem matters more than the packet budget; other items wait for room.
+		// A totem matters more than the packet budget; other items wait for room. While a click would have to wait for
+		// you to stop, one from the hotbar goes over with the swap-hands key instead (see Inventory.swapWithOffhand).
 		if (TOTEM.test(mc.player.getInventory().getItem(from))) Myriad.limits().urgent(() -> Myriad.inventory().swapWithOffhand(from));
 		else if (!Myriad.inventory().swapWithOffhand(from)) return;
 		wait = delay.get();
@@ -148,7 +149,8 @@ public class Offhand extends Module {
 
 	private void tickHotbarTotem(boolean danger) {
 		int hotbar = hotbarSlot.get() - 1;
-		if (!TOTEM.test(mc.player.getInventory().getItem(hotbar))) {
+		// The spare can wait for a moment you aren't moving.
+		if (!TOTEM.test(mc.player.getInventory().getItem(hotbar)) && Myriad.inventory().safeToClick()) {
 			int src = Myriad.inventory().findInInventory(TOTEM);
 			if (src >= 0 && Myriad.inventory().moveToHotbar(src, hotbar)) wait = delay.get();
 		}
@@ -158,12 +160,16 @@ public class Offhand extends Module {
 		}
 	}
 
-	/** Main inventory first (keeps the hotbar intact), then the hotbar if allowed; an inventory index or -1. */
+	/**
+	 * Main inventory first (keeps the hotbar intact), then the hotbar if allowed; an inventory index or -1. While you
+	 * move, the hotbar first: from there it doesn't wait for you to stop.
+	 */
 	private int find(Predicate<ItemStack> predicate) {
-		int slot = Myriad.inventory().findInInventory(predicate);
-		if (slot >= 0) return slot;
 		int hotbar = Myriad.inventory().findInHotbar(predicate);
-		// Don't take the spare hotbar totem for the off hand while the inventory has none.
-		return hotbarTotem.get() && hotbar == hotbarSlot.get() - 1 && predicate == TOTEM && mc.player.getOffhandItem().is(Items.TOTEM_OF_UNDYING) ? -1 : hotbar;
+		// Don't take the spare hotbar totem for the off hand while it already holds one.
+		if (hotbarTotem.get() && hotbar == hotbarSlot.get() - 1 && predicate == TOTEM && mc.player.getOffhandItem().is(Items.TOTEM_OF_UNDYING)) hotbar = -1;
+		if (hotbar >= 0 && !Myriad.inventory().safeToClick()) return hotbar;
+		int slot = Myriad.inventory().findInInventory(predicate);
+		return slot >= 0 ? slot : hotbar;
 	}
 }
