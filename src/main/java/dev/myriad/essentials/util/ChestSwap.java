@@ -40,6 +40,14 @@ public final class ChestSwap {
 
 	private static volatile Set<SoundEvent> muted = Set.of();
 	private static long lastSwapMs;
+	/**
+	 * Where the last swap took its item from, so where what came off went: the next swap the other way takes it from
+	 * there. With several elytras (or chestplates) at hand, the same one keeps going on.
+	 */
+	private static Pair home;
+	/** The last time {@link #ensurePair()} moved something, and since when it has found nothing to move. */
+	private static long lastFetchMs, missingSinceMs;
+	private static final long FETCH_GAP_MS = 500, MISSING_MS = 1000;
 	private static volatile long muteUntil;
 	private static boolean subscribed;
 
@@ -69,6 +77,7 @@ public final class ChestSwap {
 
 	private static Pair find(Predicate<ItemStack> counterpart) {
 		var p = mc().player;
+		if (home != null && counterpart.test(item(home))) return home;
 		if (counterpart.test(p.getOffhandItem())) return new Pair(InteractionHand.OFF_HAND, -1);
 		var inv = p.getInventory();
 		if (counterpart.test(inv.getItem(inv.getSelectedSlot()))) return new Pair(InteractionHand.MAIN_HAND, inv.getSelectedSlot());
@@ -97,6 +106,7 @@ public final class ChestSwap {
 		Pair pair = pair();
 		if (pair == null) return false;
 		lastSwapMs = System.currentTimeMillis();
+		home = pair;
 		mute(item(pair), mc().player.getItemBySlot(EquipmentSlot.CHEST));
 		Runnable use = () -> Packets.sendSequenced(seq -> {
 			var p = mc().player;
@@ -139,12 +149,64 @@ public final class ChestSwap {
 		if (!elytraWorn() && hasGlider()) swap();
 	}
 
-	/** No chestplate in the hotbar or off hand: brings one in from the inventory. False if there's none at all. */
-	public static boolean fetchChestplate() {
-		int from = Myriad.inventory().findInInventory(ChestSwap::isChestArmor);
-		if (from < 0) return false;
-		Myriad.inventory().pullToHotbar(from, s -> false);
-		return true;
+	/** What {@link #ensurePair()} found. */
+	public enum Need {
+		/** The counterpart is at hand: swaps can go. */
+		READY,
+		/** It's being brought into the hotbar, or what's worn can't be trusted yet (a swap is on its way): ask again. */
+		WAITING,
+		/** There's no counterpart anywhere (for a while: not just a swap's moment): say so. */
+		MISSING,
+		/** There is one, in the inventory, but no hotbar slot to bring it into. */
+		NO_ROOM
+	}
+
+	/**
+	 * Makes sure the counterpart of what's worn is at hand (see {@link #pair()}), bringing it into the hotbar from the
+	 * inventory if it isn't: into an empty slot, or one holding a spare of what's worn (another elytra while one is worn),
+	 * which goes back where this came from, so spares don't pile up in the hotbar. Never while a swap is on its way (what
+	 * the client shows as worn may be a moment old), and at most one click every half second; with no slot to use it
+	 * doesn't click at all. Grim refuses a click while you move or sprint: with {@code mayStop} your keys are let go for
+	 * a tick first, otherwise it waits for a moment you're still (a bounce holds sprint, so it can't stop it).
+	 */
+	public static Need ensurePair(boolean mayStop) {
+		var p = mc().player;
+		if (pair() != null) {
+			missingSinceMs = 0;
+			return Need.READY;
+		}
+		if (!settled()) return Need.WAITING;
+		ItemStack worn = p.getItemBySlot(EquipmentSlot.CHEST);
+		boolean gliderOn = ItemInfo.isGlider(worn);
+		// Nothing worn to swap (a moment between two swaps, or the chest slot is empty): nothing to bring in.
+		if (!gliderOn && !isChestArmor(worn)) return Need.WAITING;
+		Predicate<ItemStack> wanted = gliderOn ? ChestSwap::isChestArmor : s -> ItemInfo.isGlider(s) && chestEquippable(s);
+		var inv = p.getInventory();
+		int from = -1;
+		for (int i = 9; i < 36 && from < 0; i++) if (wanted.test(inv.getItem(i)) && !Myriad.inventory().isSpared(inv.getItem(i))) from = i;
+		for (int i = 9; i < 36 && from < 0; i++) if (wanted.test(inv.getItem(i))) from = i;
+		long now = System.currentTimeMillis();
+		if (from < 0) {
+			if (missingSinceMs == 0) missingSinceMs = now;
+			return now - missingSinceMs > MISSING_MS ? Need.MISSING : Need.WAITING;
+		}
+		missingSinceMs = 0;
+		Predicate<ItemStack> spare = gliderOn ? ItemInfo::isGlider : ChestSwap::isChestArmor;
+		int to = -1;
+		for (int i = 0; i < 9 && to < 0; i++) if (usable(i) && inv.getItem(i).isEmpty()) to = i;
+		for (int i = 0; i < 9 && to < 0; i++) if (usable(i) && spare.test(inv.getItem(i))) to = i;
+		if (to < 0) return Need.NO_ROOM;
+		if (now - lastFetchMs < FETCH_GAP_MS) return Need.WAITING;
+		if (mayStop ? !Myriad.inventory().prepareClick() : !Myriad.inventory().safeToClick() || p.isSprinting()) return Need.WAITING;
+		Myriad.inventory().move(from, to);
+		lastFetchMs = now;
+		return Need.WAITING;
+	}
+
+	/** A hotbar slot to bring something into: not in hand, and not held by a module. */
+	private static boolean usable(int slot) {
+		var inv = mc().player.getInventory();
+		return slot != inv.getSelectedSlot() && slot != Myriad.inventory().serverSlot();
 	}
 
 	public static boolean elytraWorn() {

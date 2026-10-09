@@ -29,7 +29,8 @@ public abstract class LivingEntityMixin {
 
 	@ModifyExpressionValue(method = "updateFallFlyingMovement", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/LivingEntity;getLookAngle()Lnet/minecraft/world/phys/Vec3;"))
 	private Vec3 essentials$glideLook(Vec3 original) {
-		return essentials$spoofs() ? Vec3.directionFromRotation(ElytraFly.spoofPitch(), ElytraFly.spoofYaw()) : original;
+		// Vanilla's own look maths (what Grim simulates): Vec3.directionFromRotation rounds differently at large yaws.
+		return essentials$spoofs() ? ((LivingEntity) (Object) this).calculateViewVector(ElytraFly.spoofPitch(), ElytraFly.spoofYaw()) : original;
 	}
 
 	@ModifyExpressionValue(method = "updateFallFlyingMovement", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/LivingEntity;getXRot()F"))

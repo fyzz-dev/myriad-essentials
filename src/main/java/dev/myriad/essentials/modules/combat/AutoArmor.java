@@ -114,7 +114,10 @@ public class AutoArmor extends Module {
 				best = i;
 			}
 		}
-		return best >= 0 && Myriad.inventory().move(best, ItemInfo.inventoryIndex(slot));
+		if (best < 0) return false;
+		// Grim (2b2t) cancels a click while you move: your keys are let go for a tick first.
+		if (!Myriad.inventory().prepareClick()) return true;
+		return Myriad.inventory().move(best, ItemInfo.inventoryIndex(slot));
 	}
 
 	/** Higher is better; 0 for nothing worth wearing. */

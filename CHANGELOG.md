@@ -3,6 +3,35 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.12
+
+Needs Myriad 0.2.7.
+
+- Elytra Fly's Obstacles is now Clear or Stop. Clear walks round what's in the lane first (Baritone, to the first clear
+  spot past it), and without Baritone, or when it finds no way (or stalls for 10 s), mines through blocks and fills
+  holes, placing only at floor level, never above your feet, sneaking up to the edge. Stop stops there. Saved Mine and
+  Baritone settings become Clear.
+- If Blocked (new): when the way can't be cleared (with Stop, anything in the lane), wait there or disconnect.
+- Recast keeps the lane's height from where you first stand. Off the line or below that height (knocked or fallen off
+  the highway), Baritone walks you back onto the lane at its height, building up if it must, before bouncing on.
+- While Recast has you on foot (Baritone, mining, filling), a jump held into the air no longer opens the elytra.
+- The flight physics use exactly the rotation the movement packet carries (core's continuous yaw and nudged pitch,
+  through vanilla's own look maths), so Grim's simulation can't drift from it. Once something had turned you a long
+  way silently (Baritone walking you round an obstacle), the plain lane angles drifted by a hair a tick and Grim
+  flagged Simulation after the bounce went on.
+- No Durability with several elytras: the same elytra keeps being used (the next swap takes from where the last one
+  went), spares stay where they are, and Auto Armor leaves the chest slot alone while you're off the ground or Recast
+  is on. With Chest set to Elytra it put the best elytra on over each chestplate swap, so each of your elytras wore in
+  turn and they piled up in the hotbar.
+- No Durability brings in what's missing (the chestplate, or the elytra back) only once its last swap has settled, and
+  says so only when there really is none: the "needs a chestplate" warning came from reading the chest slot mid-swap.
+  With no hotbar slot free (or holding a spare elytra) it says so once and doesn't click; it used to try every tick,
+  letting go of your keys each time, which broke the bounce. Recast fetches it before it starts bouncing, and mid-bounce
+  only at a still moment (Grim refuses clicks while you sprint).
+- Auto Armor lets go of your keys for a tick before it clicks (Grim cancels clicks while you move).
+- Suite: tests for spare elytras, a full hotbar, filling a hole, Disconnect, walking round with Baritone and getting
+  back onto the lane; tests that teleport mark Grim's flags after the teleport (it was counted against the module).
+
 ## 0.2.11
 
 Needs Myriad 0.2.7.

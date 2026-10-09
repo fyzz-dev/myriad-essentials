@@ -55,6 +55,10 @@ screen: `./cmd "kick GrimTester"` first, then `connect localhost:25566` to play 
 `selftest [ticks] [-module]`, which turns every module on for a while and off again and reports any that failed or
 whose handlers threw.
 
+Recast's obstacle tests take Baritone's path when the dev client has it (a Baritone jar in `run/mods`, e.g. copied from
+your own instance) and the mine-and-fill path when it doesn't; the Baritone-only tests skip without it. Run both ways
+after changing Recast's obstacle handling.
+
 Grim simulates each player as the version they joined with, so test as 1.20.4 (the default) and, for anything
 version-dependent, again with `-Pvia=native`; `./cmd "viaversion list"` shows what the server sees. Elytra wear needs
 ping to show: a landing the server misses (its packet handled in the same server tick as the next hop's) lets its

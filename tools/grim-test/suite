@@ -201,6 +201,7 @@ def t_elytra_altitude():
     client("respawn", ".panic", "wait 20")
     cmd(f"clear {P}", f"gamemode survival {P}", f"item replace entity {P} armor.chest with elytra", f"tp {P} 2000.5 230 0.5 -90 0")
     time.sleep(1.5)
+    sh("flags", "mark")
     x0 = position()[0]
     client(".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 200", ".toggle elytra_fly off", timeout=90)
     x, y, _ = position()
@@ -213,6 +214,7 @@ def t_elytra_no_durability():
     cmd(f"clear {P}", f"gamemode survival {P}", f"item replace entity {P} armor.chest with elytra", f"item replace entity {P} hotbar.1 with diamond_chestplate",
         f"tp {P} 3000.5 300 0.5 -90 0")
     time.sleep(1.5)
+    sh("flags", "mark")
     client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode altitude", ".toggle elytra_fly on", "wait 200",
         ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=90)
     damage = elytra_damage()
@@ -256,6 +258,8 @@ def recast_highway(*setup, end=4400):
     cmd(f"clear {P}", f"gamemode survival {P}", f"effect clear {P}",
         f"effect give {P} saturation 1 20 true", f"item replace entity {P} armor.chest with elytra", f"tp {P} 4000.5 201 0.5 -90 0", *setup)
     time.sleep(1)
+    # Grim's opinion of the setup (teleporting you mid-move) isn't the module's: count flags from here.
+    sh("flags", "mark")
 
 
 def t_elytra_recast():
@@ -266,13 +270,16 @@ def t_elytra_recast():
 
 
 def t_elytra_recast_obstacles():
-    # An ender chest and a 2-deep hole in the lane: the chest mined, the hole stopped at (Stop for holes without Baritone).
+    # An ender chest and a 2-deep hole in the lane, Clear: past the chest (walked round with Baritone, or mined), and
+    # at the hole either stopped before it (no Baritone and no blocks) or across it with Baritone.
     recast_highway("setblock 4150 201 0 ender_chest", "fill 4250 198 -1 4250 200 1 air",
         f"item replace entity {P} hotbar.0 with netherite_pickaxe[enchantments={{efficiency:5}}]")
-    client(".set elytra_fly mode recast", ".set elytra_fly obstacles mine", "wait 10", ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", "wait 20", timeout=90)
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles clear", "wait 10", ".toggle elytra_fly on", "wait 400", ".toggle elytra_fly off", "wait 20", timeout=90)
     x, y, _ = position()
     mined = "passed" in cmd("execute if block 4150 201 0 air")
-    return mined and 4160 < x < 4250 and y > 200.5, f"chest {'mined' if mined else 'still there'}, stopped at x={x:.1f} (hole at 4250)"
+    baritone = has_baritone()
+    ok = x > 4160 and y > 200.5 and (x < 4250 or baritone)
+    return ok, f"chest {'mined' if mined else 'walked round'}, x={x:.1f} (hole at 4250), y={y:.1f}"
 
 
 def elytra_damage():
@@ -312,6 +319,7 @@ def t_elytra_recast_diagonal():
     cmd(f"clear {P}", f"gamemode survival {P}", f"effect clear {P}", f"effect give {P} saturation 1 20 true", f"item replace entity {P} armor.chest with elytra",
         f"item replace entity {P} inventory.5 with diamond_chestplate", f"tp {P} {x0}.5 201 0.5 -45 0")
     time.sleep(1)
+    sh("flags", "mark")
     client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode recast", ".set elytra_fly obstacles stop", "wait 10",
         ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=90)
     x, y, z = position()
@@ -320,10 +328,104 @@ def t_elytra_recast_diagonal():
     return worn == 0 and x - x0 > 200 and y > 200.5, f"elytra damage {worn} after {(x - x0) * 1.414:.0f} blocks of diagonal, {abs(x - x0 - z + 0.5) / 1.414:.2f} off the line"
 
 
+def has_baritone():
+    """Whether the running dev client loaded Baritone (a jar in run/mods)."""
+    try:
+        log = open(os.path.join(HERE, "..", "..", "run", "logs", "latest.log"), errors="replace").read()
+    except OSError:
+        return False
+    return re.search(r"(?m)^\s*- baritone", log) is not None
+
+
+def elytras():
+    """(slot, damage) of every elytra the tester has, worn (102) or carried."""
+    out = []
+    for slot in [102] + list(range(36)):
+        d = data(f"Inventory[{{Slot:{slot}b}}]")
+        if "elytra" in d:
+            m = re.search(r"damage\"?: (\d+)", d)
+            out.append((slot, int(m.group(1)) if m else 0))
+    return out
+
+
+def t_elytra_recast_spare_elytras():
+    # Three spare elytras and the chestplate in the main inventory, Auto Armor wanting an elytra on (as players set it):
+    # the same elytra keeps being used, spares stay where they are and don't wear, and nothing warns.
+    recast_highway(f"item replace entity {P} inventory.5 with diamond_chestplate", f"item replace entity {P} inventory.10 with elytra",
+        f"item replace entity {P} inventory.11 with elytra", f"item replace entity {P} inventory.12 with elytra", end=4980)
+    client(".set auto_armor chest elytra", ".set auto_armor await_landing false", ".toggle auto_armor on", ".set elytra_tweaks no_durability true",
+        ".toggle elytra_tweaks on", ".set elytra_fly mode recast", ".set elytra_fly obstacles stop", "wait 10", ".toggle elytra_fly on", "wait 400",
+        ".toggle elytra_fly off", "wait 40", ".toggle elytra_tweaks off", ".toggle auto_armor off", ".set auto_armor chest chestplate",
+        ".set auto_armor await_landing true", timeout=90)
+    found = elytras()
+    hotbar = [slot for slot, _ in found if slot < 9]
+    worn = sum(1 for _, d in found if d > 0)
+    x = position()[0]
+    return len(hotbar) <= 1 and worn <= 1 and x - 4000 > 300, f"elytras {found}, {len(hotbar)} in the hotbar, {worn} worn; {x - 4000:.0f} blocks"
+
+
+def t_elytra_recast_full_hotbar():
+    # No hotbar slot for the chestplate: No Durability says so once and the bounce carries on (it used to release your
+    # keys every tick trying).
+    recast_highway(f"item replace entity {P} inventory.5 with diamond_chestplate",
+        *[f"item replace entity {P} hotbar.{i} with {item} 64" for i, item in enumerate(["dirt", "cobblestone", "stone", "oak_planks", "glass", "sand", "gravel", "netherrack", "andesite"])])
+    client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode recast", ".set elytra_fly obstacles stop", "wait 10",
+        ".toggle elytra_fly on", "wait 200", ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=90)
+    x = position()[0]
+    # (The warning is a toast, not in the log.) Nothing was clicked: the chestplate is where it was, the hotbar unchanged.
+    untouched = item(14) == "minecraft:diamond_chestplate" and item(0) == "minecraft:dirt"
+    return untouched and x - 4000 > 200, f"{'inventory untouched' if untouched else 'inventory changed'}, {x - 4000:.0f} blocks in 10 s"
+
+
+def t_elytra_recast_fill_hole():
+    # A 3-deep hole across the lane and no Baritone: Clear fills it at floor level with blocks from the hotbar and bounces on.
+    recast_highway("fill 4100 197 -1 4101 200 1 air", f"item replace entity {P} hotbar.2 with obsidian 64")
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles clear", "wait 10", ".toggle elytra_fly on", "wait 400", ".toggle elytra_fly off", "wait 20", timeout=90)
+    x, y, _ = position()
+    filled = sum(passed(f"if block {bx} 200 {bz} obsidian") for bx in (4100, 4101) for bz in (-1, 0, 1))
+    above = sum(passed(f"if block {bx} 201 {bz} obsidian") for bx in range(4095, 4106) for bz in (-1, 0, 1))
+    return filled >= 2 and above == 0 and x > 4150 and y > 200.5, f"{filled}/6 hole blocks filled, {above} placed above the floor, x={x:.0f}, y={y:.1f}"
+
+
+def t_elytra_recast_disconnect():
+    # Stop with If Blocked Disconnect: a chest in the lane logs you out (then the tester joins again).
+    recast_highway("setblock 4100 201 0 ender_chest")
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles stop", ".set elytra_fly if_blocked disconnect", "wait 10", ".toggle elytra_fly on", "wait 160", timeout=60)
+    left = P not in cmd("list")
+    client("wait 40", "connect localhost:25565", "wait 100", ".set elytra_fly if_blocked wait", ".set elytra_fly obstacles clear", ".toggle elytra_fly off", timeout=60)
+    return left, "disconnected" if left else "still online"
+
+
+def t_elytra_recast_walk_round():
+    # Baritone installed: an ender chest and a bedrock pillar in the lane are walked round (the chest left alone).
+    recast_highway("setblock 4100 201 0 ender_chest", "fill 4160 201 0 4160 202 0 bedrock", f"item replace entity {P} hotbar.0 with netherite_pickaxe")
+    if not has_baritone(): return True, "skipped: Baritone isn't installed in the dev client (run/mods)"
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles clear", "wait 10", ".toggle elytra_fly on", "wait 500", ".toggle elytra_fly off", "wait 20", timeout=90)
+    x, y, _ = position()
+    chest = "passed" in cmd("execute if block 4100 201 0 ender_chest")
+    return chest and x > 4170 and y > 200.5, f"chest {'left' if chest else 'mined'}, x={x:.0f}, y={y:.1f}"
+
+
+def t_elytra_recast_back_on_lane():
+    # Knocked off the highway (onto a ledge 4 below, beside it) while bouncing: Baritone takes you back up onto the lane
+    # at its height, and the bounce goes on.
+    recast_highway("fill 4055 195 2 4095 206 9 air", "fill 4060 195 3 4090 195 9 stone", f"item replace entity {P} hotbar.3 with dirt 64")
+    if not has_baritone(): return True, "skipped: Baritone isn't installed in the dev client (run/mods)"
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles clear", "wait 10", ".toggle elytra_fly on", "wait 40", timeout=30)
+    cmd(f"tp {P} 4075.5 196 6.5")
+    # The knock-off is the test's teleport: Grim's take on it isn't the module's.
+    client("wait 40", timeout=10)
+    time.sleep(1)
+    sh("flags", "mark")
+    client("wait 560", ".toggle elytra_fly off", "wait 20", timeout=90)
+    x, y, z = position()
+    return y > 200.5 and x > 4120 and abs(z - 0.5) < 1.5, f"x={x:.0f}, y={y:.1f}, {abs(z - 0.5):.1f} off the line"
+
+
 def t_elytra_recast_low_ceiling():
     # Turned on under a two-high roof: it walks out from under it (mining nothing) and bounces on from there.
     recast_highway("fill 3995 203 -1 4030 203 1 stone", f"item replace entity {P} hotbar.0 with netherite_pickaxe[enchantments={{efficiency:5}}]")
-    client(".set elytra_fly mode recast", ".set elytra_fly obstacles mine", "wait 10", ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", "wait 20", timeout=90)
+    client(".set elytra_fly mode recast", ".set elytra_fly obstacles clear", "wait 10", ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", "wait 20", timeout=90)
     x = position()[0]
     roof = sum(passed(f"if block {bx} 203 0 stone") for bx in range(3995, 4031))
     return roof == 36 and x > 4150, f"{x - 4000:.0f} blocks in 15 s, {36 - roof} roof blocks mined"
@@ -458,6 +560,12 @@ TESTS = [
     ("elytra_fly recast no durability", t_elytra_recast_no_durability),
     ("elytra_fly recast low ceiling", t_elytra_recast_low_ceiling),
     ("elytra_fly recast diagonal", t_elytra_recast_diagonal),
+    ("elytra_fly recast spare elytras", t_elytra_recast_spare_elytras),
+    ("elytra_fly recast full hotbar", t_elytra_recast_full_hotbar),
+    ("elytra_fly recast fill hole", t_elytra_recast_fill_hole),
+    ("elytra_fly recast walk round", t_elytra_recast_walk_round),
+    ("elytra_fly recast back on lane", t_elytra_recast_back_on_lane),
+    ("elytra_fly recast disconnect", t_elytra_recast_disconnect),
     ("elytra_tweaks no durability", t_elytra_no_durability),
     ("elytra_tweaks no durability landing", t_elytra_no_durability_landing),
     ("elytra_fly altitude wearing out", t_elytra_wearing_out),

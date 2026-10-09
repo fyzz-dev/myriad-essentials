@@ -10,7 +10,9 @@ import dev.myriad.api.event.events.TickEvent;
 import dev.myriad.api.module.Categories;
 import dev.myriad.api.module.Module;
 import dev.myriad.api.module.Modules;
+import dev.myriad.api.build.Target;
 import dev.myriad.api.service.Breaking;
+import dev.myriad.api.service.Placement;
 import dev.myriad.api.service.Rotations;
 import dev.myriad.api.setting.EnumSetting;
 import dev.myriad.api.util.ItemInfo;
@@ -27,7 +29,9 @@ import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
@@ -57,8 +61,12 @@ import java.util.List;
  * never steers; drifting off that line turns the flight a little back onto it. Far enough ahead to stop in time (it
  * grows with your speed) it watches for anything in the way: a block (an ender chest, a portal, a wall), a hole you
  * could fall into, or chunks that haven't loaded. It then stops jumping and lands, as you would, and Obstacles decides
- * what happens next: stop, mine through it, or have Baritone walk you to the first clear spot past it and bounce on
- * from there. It also notices when it's stuck, or the server keeps setting you back, and doesn't keep trying.</li>
+ * what happens next. Clear walks round it first (Baritone, to the first clear spot past it), and without Baritone (or
+ * when it finds no way) mines through blocks and fills holes, placing blocks only at floor level, never above your
+ * feet; Stop stops there. It also notices when it's stuck, or the server keeps setting you back, and doesn't keep
+ * trying. The lane's height is kept from where you first stand: off the line or below it (a fall off the highway),
+ * Baritone walks you back onto it before bouncing on. When the way can't be cleared, If Blocked waits there or
+ * disconnects.</li>
  * <li><b>Altitude</b> crosses open country without fireworks, "pitch 40" style. It dives until you're fast, pulls up hard, then eases
  * back to level: pulling up gives back more height than the speed it costs, so the cycle holds the altitude you started
  * gliding at (it dives harder when you're above it and climbs more when you're below). Start high, since the first dive
@@ -73,22 +81,29 @@ public class ElytraFly extends Module {
 	}
 
 	public enum Obstacles {
-		STOP, MINE, BARITONE
+		CLEAR, STOP
+	}
+
+	public enum IfBlocked {
+		WAIT, DISCONNECT
 	}
 
 	private final EnumSetting<Mode> mode = sgGeneral.enumSetting("Mode", Mode.RECAST)
 		.description("Recast to bounce along a highway, Altitude to cross open country without fireworks.").build();
-	private final EnumSetting<Obstacles> obstacles = sgGeneral.enumSetting("Obstacles", Obstacles.MINE)
-		.description("What to do about blocks in the lane: stop, mine them, or walk round with Baritone (mines if Baritone isn't installed).")
+	private final EnumSetting<Obstacles> obstacles = sgGeneral.enumSetting("Obstacles", Obstacles.CLEAR)
+		.description("Clear: walk round with Baritone, else mine through blocks and fill holes at floor level. Stop: stop at them.")
+		.visible(() -> mode.get() == Mode.RECAST).build();
+	private final EnumSetting<IfBlocked> ifBlocked = sgGeneral.enumSetting("If Blocked", IfBlocked.WAIT)
+		.description("When the way can't be cleared (with Stop, anything in the lane): wait there, or disconnect.")
 		.visible(() -> mode.get() == Mode.RECAST).build();
 
 	private enum State {
-		IDLE, BOUNCING, BRAKING, WALKING, MINING, PATHING, WAITING, BLOCKED, UNDER
+		IDLE, BOUNCING, BRAKING, WALKING, MINING, PATHING, WAITING, BLOCKED, UNDER, FILLING
 	}
 
 	/** What's ahead in the lane, and how far along it. CEILING: too low to hop under, but room to walk. */
 	private enum Hazard {
-		BLOCKS, CEILING, HOLE, UNLOADED, STUCK
+		BLOCKS, CEILING, HOLE, UNLOADED, STUCK, OFF_LANE
 	}
 
 	private record Obstruction(Hazard hazard, double distance, List<BlockPos> blocks) {
@@ -131,6 +146,10 @@ public class ElytraFly extends Module {
 	private static final float STEER_MAX_TURN = 10;
 	/** Recast with Baritone: this far off the line, walk back to it; and how far past an obstacle to look for room. */
 	private static final double RECENTRE_DISTANCE = 3, PASS_SEARCH = 48;
+	/** Recast: this far below the lane's height, standing, you've come off the highway. */
+	private static final double LANE_DROP = 1.5;
+	/** Recast, filling a hole: placing within this reach, and looking this far past the hole's edge for more of it. */
+	private static final double PLACE_REACH = 4, HOLE_SPAN = 5;
 	/** Within this of a block, mine it rather than walk closer. */
 	private static final double MINE_REACH = 3.5;
 	/**
@@ -168,7 +187,11 @@ public class ElytraFly extends Module {
 	/** Altitude: coming down to land, the elytra being nearly worn out. */
 	private boolean landing;
 
-	private boolean wantJump, wantForward, spoofing;
+	private boolean wantJump, wantForward, wantSneak, spoofing;
+	/** Recast: the lane's height, where you first stood (NaN until then). */
+	private double laneY = Double.NaN;
+	/** Recast: Baritone found no way past this obstacle; mine or fill instead until bouncing goes on. */
+	private boolean baritoneFailed;
 	/** Open the elytra this tick (see {@link #startGliding}); and whether jump was pressed last tick. */
 	private boolean wantOpen, jumpedLastTick;
 	/** Keep gliding client-side through ground touches; set once the elytra has opened while bouncing. */
@@ -199,6 +222,10 @@ public class ElytraFly extends Module {
 	/** Recast with Baritone: where it's walking you, and how long it's been idle on the way. */
 	private Vec3 pathTarget;
 	private int pathWait, pathTries;
+	/** Recast with Baritone: the closest it has got to where it's walking you, and ticks since it got closer. */
+	private double pathBest = Double.MAX_VALUE;
+	private int pathStall;
+	private static final int PATH_STALL = 200;
 	/** Recast: how far along the lane you were each of the last {@link #STUCK_TICKS} ticks spent trying to move. */
 	private final double[] progress = new double[STUCK_TICKS];
 	private int progressCount;
@@ -206,7 +233,10 @@ public class ElytraFly extends Module {
 	private final java.util.ArrayDeque<Long> setbacks = new java.util.ArrayDeque<>();
 	/** Recast: stuck, or set back too often: the lane counts as blocked until it's passed. */
 	private boolean forcedBlock;
-	private boolean warned, chestWarned;
+	private boolean warned;
+	/** Ticks spent waiting for the chestplate before bouncing, and the most. */
+	private int readyWait;
+	private static final int READY_WAIT = 40;
 
 	public ElytraFly() {
 		super(Categories.MOVEMENT, "Elytra Fly", "Bounce along highways, or cross open country without fireworks.");
@@ -229,7 +259,8 @@ public class ElytraFly extends Module {
 		phase = Phase.DIVE;
 		cruiseY = groundY = Double.NaN;
 		landing = false;
-		wantJump = wantForward = spoofing = holdGlide = flagged = forcedBlock = warned = chestWarned = false;
+		wantJump = wantForward = wantSneak = spoofing = holdGlide = flagged = forcedBlock = warned = baritoneFailed = false;
+		laneY = Double.NaN;
 		letGo();
 		putElytraBack();
 		pathWait = pathTries = pauseTicks = progressCount = 0;
@@ -245,6 +276,7 @@ public class ElytraFly extends Module {
 		return switch (state) {
 			case BRAKING -> "Stopping";
 			case WALKING, MINING -> "Mining";
+			case FILLING -> "Filling";
 			case UNDER -> "Low ceiling";
 			case PATHING -> "Baritone";
 			case WAITING -> "Loading";
@@ -263,14 +295,18 @@ public class ElytraFly extends Module {
 	}
 
 	/** The rotation flight physics should use; only meaningful while {@link #spoofing()}. */
+	/**
+	 * The flight rotation, as this tick's movement packet carries it (called from the movement code, before it goes out):
+	 * the yaw kept continuous with the last one sent, and a pitch nudged when nothing else changed. Grim simulates
+	 * those exact floats, so the physics uses them too; the plain lane angles drift from them by a hair, enough to flag
+	 * once something else (Baritone's turns, for one) has wound the sent yaw far from zero.
+	 */
 	public static float spoofYaw() {
-		ElytraFly m = Modules.get(ElytraFly.class);
-		return m == null ? 0 : m.spoofYaw;
+		return Myriad.rotations().rotationForAction()[0];
 	}
 
 	public static float spoofPitch() {
-		ElytraFly m = Modules.get(ElytraFly.class);
-		return m == null ? 0 : m.spoofPitch;
+		return Myriad.rotations().rotationForAction()[1];
 	}
 
 	/** Whether Recast is bouncing: it lets the glide drop and opens it again itself, every hop. */
@@ -294,10 +330,22 @@ public class ElytraFly extends Module {
 		return holdsGlide() && p != null && p.getFoodData().hasEnoughFood() && !p.hasEffect(MobEffects.BLINDNESS);
 	}
 
-	/** Whether the bounce is swapping the elytra with a chestplate (Auto Armor leaves the chest slot alone meanwhile). */
-	public static boolean swapsChest() {
+	/** Whether Recast has you on foot for now (walking round or clearing something, waiting): no gliding meanwhile. */
+	public static boolean onFoot() {
 		ElytraFly m = Modules.active(ElytraFly.class);
-		return m != null && m.chestMode && m.state == State.BOUNCING;
+		if (m == null || m.activeMode != Mode.RECAST) return false;
+		return switch (m.state) {
+			case PATHING, WALKING, MINING, FILLING, UNDER, BLOCKED, WAITING -> true;
+			case IDLE, BOUNCING, BRAKING -> false;
+		};
+	}
+
+	/**
+	 * Whether the bounce may swap the elytra with a chestplate (Auto Armor leaves the chest slot alone meanwhile): with
+	 * No Durability, all the while it's going, stops for obstacles included.
+	 */
+	public static boolean swapsChest() {
+		return ElytraTweaks.noDurability() && bouncing();
 	}
 
 	// ---- tick -----------------------------------------------------------------------------------------------------
@@ -308,6 +356,11 @@ public class ElytraFly extends Module {
 		if (wantForward) {
 			e.forward = e.sprint = true;
 			e.backward = e.left = e.right = false;
+		}
+		if (wantSneak) {
+			// Up to a hole's edge: sneaking keeps you from walking off it.
+			e.sneak = true;
+			e.sprint = false;
 		}
 		// Vanilla opens the elytra when jump goes from released to pressed in the air: release it for a tick if it's
 		// held, then press it.
@@ -337,7 +390,7 @@ public class ElytraFly extends Module {
 	 */
 	@Subscribe(priority = Priority.BEFORE_ACTIONS + 10)
 	private void onTick(TickEvent.Pre e) {
-		wantJump = wantOpen = wantForward = false;
+		wantJump = wantOpen = wantForward = wantSneak = false;
 		if (!inGame()) return;
 		if (mode.get() != activeMode) {
 			reset();
@@ -459,23 +512,27 @@ public class ElytraFly extends Module {
 			return;
 		}
 		if (Float.isNaN(lane)) fixLine();
-		if (mc.player.onGround()) groundY = mc.player.getY();
+		if (mc.player.onGround()) {
+			groundY = mc.player.getY();
+			if (Double.isNaN(laneY)) laneY = groundY;
+		}
 
 		double range = state == State.BOUNCING ? lookAhead() : Math.max(lookAhead(), RESUME_LOOK_AHEAD);
-		Obstruction ahead = forcedBlock ? new Obstruction(Hazard.STUCK, 0, List.of()) : scanAhead(range);
-		if (ahead == null && obstacles.get() == Obstacles.BARITONE && Baritone.isAvailable()
-			&& Math.abs(offLine(mc.player.position())) > RECENTRE_DISTANCE) {
-			// Well off the highway (a setback, or the way round something): walk back onto it first.
-			ahead = new Obstruction(Hazard.STUCK, 0, List.of());
-		}
+		Obstruction ahead;
+		if (forcedBlock) ahead = new Obstruction(Hazard.STUCK, 0, List.of());
+		// Well off the highway or below it (a setback, the way round something, a fall): back onto it first.
+		else if (mc.player.onGround() && offLane()) ahead = new Obstruction(Hazard.OFF_LANE, 0, List.of());
+		else ahead = scanAhead(range);
 		if (ahead != null) {
 			handleObstacle(ahead);
 			return;
 		}
+		if (state != State.BOUNCING && !readyToBounce()) return;
 		if (state != State.BOUNCING) {
 			stopMining();
+			Myriad.placement().cancel(this);
 			state = State.BOUNCING;
-			warned = false;
+			warned = baritoneFailed = false;
 			progressCount = 0;
 		}
 		if (pauseTicks > 0) {
@@ -490,6 +547,21 @@ public class ElytraFly extends Module {
 		}
 		if (trackStuck()) return;
 		bounce();
+	}
+
+	/**
+	 * Before bouncing (on), or again after a stop: with No Durability, the chestplate is brought into the hotbar first,
+	 * while you stand, since a click mid-bounce has to wait for a still moment it may not get. Only while one is on its
+	 * way, and not for long.
+	 */
+	private boolean readyToBounce() {
+		if (!ElytraTweaks.noDurability() || !mc.player.onGround() || ChestSwap.ensurePair(true) != ChestSwap.Need.WAITING || ++readyWait > READY_WAIT) {
+			readyWait = 0;
+			return true;
+		}
+		stand();
+		state = State.WAITING;
+		return false;
 	}
 
 	/** One tick of the bounce itself. */
@@ -513,10 +585,7 @@ public class ElytraFly extends Module {
 		// chestplate in the hotbar or off hand: one is brought in from the inventory.
 		// Not while you eat (or use anything held): Grim stops it at every swap (see onUse).
 		chestMode = ElytraTweaks.noDurability() && ChestSwap.ready() && !mc.player.isUsingItem();
-		if (ElytraTweaks.noDurability() && ChestSwap.pair() == null && !ChestSwap.fetchChestplate() && !chestWarned) {
-			warn("No Durability needs a chestplate in your inventory to keep the bounce from wearing the elytra.");
-			chestWarned = true;
-		}
+		if (ElytraTweaks.noDurability()) ElytraTweaks.chestplateAtHand(false);
 		boolean cleared = GlideHold.cleared(this);
 		// What's worn only counts once the server has answered the last swap (see ChestSwap.settled): with jitter the
 		// client can show a moment that's already past, and swapping on that puts the client and Grim out of step.
@@ -568,19 +637,22 @@ public class ElytraFly extends Module {
 				return;
 			}
 		}
-		Obstacles how = obstacles.get();
-		boolean walkRound = how != Obstacles.STOP && Baritone.isAvailable();
+		boolean clear = obstacles.get() == Obstacles.CLEAR;
+		// Walking round first; mining and filling when there's no Baritone, or it found no way.
+		boolean walkRound = clear && Baritone.isAvailable() && !baritoneFailed;
+		if (ahead.hazard() != Hazard.HOLE) Myriad.placement().cancel(this);
 		switch (ahead.hazard()) {
 			case UNLOADED -> {
 				// Not an obstacle: wait where you are until it loads, then bounce on.
 				stand();
 				state = State.WAITING;
 			}
+			case CEILING -> walkUnder();
 			case BLOCKS -> {
-				if (how == Obstacles.BARITONE && walkRound) startPathing(ahead.distance());
-				else if (how == Obstacles.STOP) blocked("Lane blocked");
+				if (!clear) blocked("Lane blocked");
+				else if (walkRound) startPathing(ahead.distance());
 				else {
-					// Unbreakable blocks (bedrock, barriers) can only be stopped at or walked round.
+					// Unbreakable blocks (bedrock, barriers) can only be walked round.
 					BlockPos breakable = null;
 					for (BlockPos pos : ahead.blocks()) {
 						if (mc.level.getBlockState(pos).getDestroySpeed(mc.level, pos) >= 0) {
@@ -589,19 +661,22 @@ public class ElytraFly extends Module {
 						}
 					}
 					if (breakable != null) mineOrApproach(breakable);
-					else if (walkRound) startPathing(ahead.distance());
 					else blocked("Lane blocked by something unbreakable");
 				}
 			}
-			case CEILING -> walkUnder();
 			case HOLE -> {
-				if (walkRound) startPathing(ahead.distance());
-				else blocked("Hole in the lane");
+				if (!clear) blocked("Hole in the lane");
+				else if (walkRound) startPathing(ahead.distance());
+				else if (!fillHole(ahead)) blocked("Hole in the lane, and no blocks to fill it");
 			}
 			case STUCK -> {
 				forcedBlock = false;
 				if (walkRound) startPathing(1);
-				else giveUp("Stuck (or set back over and over) and no way round without Baritone");
+				else blocked("Stuck (or set back over and over)");
+			}
+			case OFF_LANE -> {
+				if (clear && Baritone.isAvailable() && !baritoneFailed) returnToLane();
+				else blocked("Off the highway");
 			}
 		}
 	}
@@ -635,11 +710,94 @@ public class ElytraFly extends Module {
 	private void blocked(String why) {
 		stand();
 		state = State.BLOCKED;
+		if (ifBlocked.get() == IfBlocked.DISCONNECT) {
+			leave(why);
+			return;
+		}
 		if (!warned) warn(why + ", waiting until it's clear");
 		warned = true;
 	}
 
+	/** If Blocked: disconnects (turning off first, so it doesn't carry on when you join again). Not in singleplayer. */
+	private void leave(String why) {
+		disable();
+		if (mc.isLocalServer() || mc.getConnection() == null) {
+			warn(why + ": turning off");
+			return;
+		}
+		mc.getConnection().getConnection().disconnect(Component.literal("[Elytra Fly] " + why));
+	}
+
+	/**
+	 * Fills a hole in the lane, placing blocks only at floor level: walks up to its edge (sneaking, so you don't walk
+	 * off it), then places the gaps under where you'd walk, nearest first, each against one already there. False when
+	 * there are no blocks to place.
+	 */
+	private boolean fillHole(Obstruction hole) {
+		int slot = fillerSlot();
+		if (slot == -1) return false;
+		stopMining();
+		state = State.FILLING;
+		progressCount = 0;
+		if (slot < 0) {
+			// Being brought into the hotbar.
+			stand();
+			return true;
+		}
+		Placement.Options options = Placement.Options.STRICT.withRotate(true);
+		Vec3 eye = mc.player.getEyePosition();
+		for (BlockPos gap : holeGaps(hole.distance())) {
+			if (Myriad.placement().isPending(gap)) {
+				stand();
+				return true;
+			}
+			if (eye.distanceTo(Vec3.atCenterOf(gap)) > PLACE_REACH) break;
+			if (Myriad.placement().check(gap, options).ok()) {
+				stand();
+				// Standing still first: the placement aims, then clicks a tick later from where you were when it aimed.
+				if (mc.player.getDeltaMovement().horizontalDistanceSqr() < 1e-4) Myriad.placement().place(this, gap, slot, options);
+				return true;
+			}
+		}
+		// Nothing to place from here: closer, along the lane, sneaking up to the edge.
+		spoof(steeredYaw(), 0);
+		wantForward = wantSneak = true;
+		return true;
+	}
+
+	/** The floor blocks missing under where you'd walk along the lane, from just before the hole on, nearest first. */
+	private List<BlockPos> holeGaps(double distance) {
+		Vec3 dir = laneDir();
+		AABB box = mc.player.getBoundingBox();
+		int floorBlock = Mth.floor(floorY()) - 1;
+		AABB feet = new AABB(box.minX, floorBlock + 0.1, box.minZ, box.maxX, floorBlock + 0.9, box.maxZ);
+		List<BlockPos> gaps = new ArrayList<>();
+		for (double d = Math.max(0, distance - 1); d <= distance + HOLE_SPAN; d += SWEEP_STEP / 2) {
+			AABB at = feet.move(dir.scale(d));
+			for (BlockPos pos : BlockPos.betweenClosed(BlockPos.containing(at.minX, at.minY, at.minZ), BlockPos.containing(at.maxX, at.maxY, at.maxZ))) {
+				if (!gaps.contains(pos) && mc.level.getBlockState(pos).getCollisionShape(mc.level, pos).isEmpty()) gaps.add(pos.immutable());
+			}
+		}
+		return gaps;
+	}
+
+	/** A hotbar slot with ordinary building blocks: -1 if there are none at all, -2 while some are brought in. */
+	private int fillerSlot() {
+		var inv = Myriad.inventory();
+		java.util.function.Predicate<ItemStack> filler = s -> s.getItem() instanceof BlockItem && Target.solid().preference(s) >= 0;
+		int slot = inv.findInHotbar(filler);
+		if (slot >= 0) return slot;
+		int from = inv.findInInventory(filler);
+		if (from < 0) return -1;
+		inv.pullToHotbar(from, s -> false);
+		return -2;
+	}
+
 	private void giveUp(String why) {
+		if (ifBlocked.get() == IfBlocked.DISCONNECT) {
+			leave(why);
+			return;
+		}
 		warn(why + ": turning off");
 		disable();
 	}
@@ -735,13 +893,27 @@ public class ElytraFly extends Module {
 		stand();
 		Vec3 target = clearSpotPast(along(mc.player.position()) + distance);
 		if (target == null || !Baritone.pathTo(Mth.floor(target.x), Mth.floor(target.y + 0.1), Mth.floor(target.z))) {
-			giveUp("No way past the obstacle");
+			// Mine or fill instead (or If Blocked).
+			baritoneFailed = true;
+			state = State.WAITING;
 			return;
 		}
-		if (pathTarget == null) info("Lane blocked, walking past it with Baritone");
+		if (pathTarget == null) info(distance <= 0 ? "Off the highway, walking back onto it with Baritone" : "Lane blocked, walking past it with Baritone");
 		pathTarget = target;
 		state = State.PATHING;
-		pathWait = 0;
+		pathWait = pathStall = 0;
+		pathBest = Double.MAX_VALUE;
+	}
+
+	/** Off the highway: back onto the lane, at its height, about where you are along it. */
+	private void returnToLane() {
+		startPathing(0);
+	}
+
+	/** Standing well to the side of the lane's line, or below its height. */
+	private boolean offLane() {
+		Vec3 pos = mc.player.position();
+		return Math.abs(offLine(pos)) > RECENTRE_DISTANCE || !Double.isNaN(laneY) && pos.y < laneY - LANE_DROP;
 	}
 
 	/** Waits for Baritone to get you back onto the lane past the obstacle, then bounces on. */
@@ -750,7 +922,7 @@ public class ElytraFly extends Module {
 		holdGlide = false;
 		letGo();
 		Vec3 pos = mc.player.position();
-		if (mc.player.onGround() && along(pos) >= along(pathTarget) - 1 && Math.abs(offLine(pos)) <= 1) {
+		if (mc.player.onGround() && along(pos) >= along(pathTarget) - 1 && Math.abs(offLine(pos)) <= 1 && !offLane()) {
 			Baritone.stop();
 			pathTarget = null;
 			pathTries = 0;
@@ -758,14 +930,32 @@ public class ElytraFly extends Module {
 			progressCount = 0;
 			return;
 		}
-		if (Baritone.isPathing()) {
+		// Baritone can stall while it says it's still going (stuck on a pillar, a block it can't place): no closer for
+		// a while counts as having stopped.
+		double left = pos.distanceTo(pathTarget);
+		if (left < pathBest - 0.5) {
+			pathBest = left;
+			pathStall = 0;
+		}
+		if (Baritone.isPathing() && ++pathStall < PATH_STALL) {
 			pathWait = 0;
 			return;
+		}
+		if (pathStall >= PATH_STALL) {
+			Baritone.stop();
+			pathStall = 0;
+			pathBest = Double.MAX_VALUE;
+			pathWait = 40;
 		}
 		// Give the pathfinder a moment to start before deciding it's stuck, then try somewhere further on, twice.
 		if (++pathWait < 40) return;
 		if (++pathTries > 2) {
-			giveUp("Baritone couldn't get past the obstacle");
+			// Mine or fill instead (or If Blocked).
+			Baritone.stop();
+			pathTarget = null;
+			pathTries = 0;
+			baritoneFailed = true;
+			state = State.WAITING;
 			return;
 		}
 		startPathing(along(pathTarget) - along(pos) + 4);
@@ -856,10 +1046,10 @@ public class ElytraFly extends Module {
 		return (pos.x - lineOrigin.x) * -dir.z + (pos.z - lineOrigin.z) * dir.x;
 	}
 
-	/** The point {@code t} blocks along the line, at the floor's height. */
+	/** The point {@code t} blocks along the line, at the lane's height. */
 	private Vec3 pointOnLine(double t) {
 		Vec3 dir = laneDir();
-		return new Vec3(lineOrigin.x + dir.x * t, floorY(), lineOrigin.z + dir.z * t);
+		return new Vec3(lineOrigin.x + dir.x * t, Double.isNaN(laneY) ? floorY() : laneY, lineOrigin.z + dir.z * t);
 	}
 
 	/** The height you bounce off: where you last landed. */

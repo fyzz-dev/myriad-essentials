@@ -100,6 +100,8 @@ public class ElytraTweaks extends Module {
 	private static final int FORGET_TICKS = 30;
 
 	private boolean swapping, startNow, rocketWanted, firing, warned;
+	/** Said why the counterpart isn't at hand (once, until it is). */
+	private boolean pairWarned;
 	/**
 	 * Stopping in mid-air: the elytra is back on, and the glide starts again once the server's stop for the last swap
 	 * is in (held meanwhile, so you keep gliding) and not straight after the last start; {@link #finishWait} counts the
@@ -150,10 +152,16 @@ public class ElytraTweaks extends Module {
 		});
 	}
 
-	/** Whether the elytra is being swapped (Auto Armor leaves the chest slot alone meanwhile). */
+	/**
+	 * Whether the chest slot is No Durability's (or the bounce's) to swap: while it swaps, and with No Durability on any
+	 * time you're off the ground, as a chestplate worn then is one of its swaps. Auto Armor and No Break leave the slot
+	 * alone meanwhile: putting the best elytra on over it would wear each of your elytras in turn.
+	 */
 	public static boolean holdsChest() {
 		ElytraTweaks m = Modules.active(ElytraTweaks.class);
-		return m != null && m.swapping || ElytraFly.swapsChest();
+		if (m != null && m.swapping || ElytraFly.swapsChest()) return true;
+		var p = Minecraft.getInstance().player;
+		return noDurability() && p != null && !p.onGround() && !p.isInWater();
 	}
 
 	/** Whether No Durability is on, for Elytra Fly's bounce to swap with a chestplate as well. */
@@ -194,10 +202,7 @@ public class ElytraTweaks extends Module {
 				&& !ElytraFly.holdsGlide() && room(true);
 			armTicks = ready ? armTicks + 1 : 0;
 			if (armTicks < ARM_TICKS) return;
-			if (ChestSwap.pair() == null) {
-				if (!ChestSwap.fetchChestplate()) warnOnce("No Durability needs a chestplate in your inventory.");
-				return;
-			}
+			if (!chestplateAtHand(true)) return;
 			if (!ChestSwap.ready()) {
 				warnOnce("No Durability can't swap armour with Curse of Binding.");
 				return;
@@ -376,6 +381,31 @@ public class ElytraTweaks extends Module {
 		} finally {
 			firing = false;
 		}
+	}
+
+	/**
+	 * Whether the chestplate (or, with it on, the elytra) is at hand to swap with, bringing it in from the inventory if
+	 * not (see ChestSwap.ensurePair); says once why it isn't when it can't be.
+	 */
+	public static boolean chestplateAtHand(boolean mayStop) {
+		ElytraTweaks m = Modules.active(ElytraTweaks.class);
+		if (m == null) return false;
+		switch (ChestSwap.ensurePair(mayStop)) {
+			case READY -> {
+				m.pairWarned = false;
+				return true;
+			}
+			case MISSING -> m.pairWarning(ChestSwap.elytraWorn() ? "No Durability needs a chestplate in your inventory." : "No Durability can't find the elytra to put back on.");
+			case NO_ROOM -> m.pairWarning("No Durability needs a free hotbar slot (or one with a spare elytra) for the chestplate.");
+			case WAITING -> {
+			}
+		}
+		return false;
+	}
+
+	private void pairWarning(String message) {
+		if (!pairWarned) warn(message);
+		pairWarned = true;
 	}
 
 	private void warnOnce(String message) {
