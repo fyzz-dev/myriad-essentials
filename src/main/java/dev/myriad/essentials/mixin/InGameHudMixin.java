@@ -73,10 +73,4 @@ public abstract class InGameHudMixin {
 	private void essentials$scoreboard(GuiGraphicsExtractor context, DeltaTracker tickCounter, CallbackInfo ci) {
 		if (NoRender.hides(n -> n.scoreboard)) ci.cancel();
 	}
-
-	/** Only the overlay: the open chat screen draws its own. */
-	@Inject(method = "extractChat", at = @At("HEAD"), cancellable = true)
-	private void essentials$chat(GuiGraphicsExtractor context, DeltaTracker tickCounter, CallbackInfo ci) {
-		if (NoRender.hides(n -> n.chat)) ci.cancel();
-	}
 }

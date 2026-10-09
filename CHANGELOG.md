@@ -3,6 +3,24 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.11
+
+Needs Myriad 0.2.7.
+
+- No Render: Chat hides the chat however it's drawn. Other mods can replace the HUD's chat element and draw it
+  themselves, which skipped the hook before; the open chat screen still shows it. Portal Overlay also stops the screen
+  warp while you stand in a portal (it only hid the purple overlay; Nausea only stopped nausea's own warp).
+- Recast with No Durability cuts a long glide sooner and in more places. On a diagonal highway the server misses
+  far more of the landings (its glides ran 12 to 15 ticks, cut by the chestplate a few ticks short of the 20 that
+  wear the elytra); the cut now comes 10 ticks after the glide's start, which leaves room for ping spikes and 2b2t's
+  lag, and also runs while the bounce pauses after a setback (only with the ground close below). Measured as 1.20.4
+  through 200 ms of ping with 80 ms of jitter on a 500-block diagonal: longest server glide 12 ticks (was 15, and 21
+  once with Grim flags), no wear, no flags; at 14 TPS no wear either (one run had a brief Simulation flag).
+- It also only swaps once the server has answered its last swap: with jitter the client can show for a tick what the
+  server had before, and a swap made on that puts the client out of step with Grim (Simulation flags, setbacks).
+- Tried and left out: wearing the chestplate between every start, so the server never glides more than a moment (as
+  some 2b2t clients do). Under 80 ms of jitter it flags Grim's Simulation where the bounce touches the ground.
+
 ## 0.2.10
 
 Needs Myriad 0.2.7 (`Inventory.spare`, which No Break uses).

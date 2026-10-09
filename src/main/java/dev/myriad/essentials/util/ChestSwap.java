@@ -35,7 +35,11 @@ public final class ChestSwap {
 	/** How far from you the server may play it (it plays it where it has you, a round trip behind at glide speed). */
 	private static final double MUTE_RANGE = 24;
 
+	/** Extra wait past a round trip for the server's answer to the last swap, for jitter. */
+	private static final long SETTLE_MARGIN_MS = 150, MAX_SETTLE_MS = 700;
+
 	private static volatile Set<SoundEvent> muted = Set.of();
+	private static long lastSwapMs;
 	private static volatile long muteUntil;
 	private static boolean subscribed;
 
@@ -92,6 +96,7 @@ public final class ChestSwap {
 	public static boolean swap() {
 		Pair pair = pair();
 		if (pair == null) return false;
+		lastSwapMs = System.currentTimeMillis();
 		mute(item(pair), mc().player.getItemBySlot(EquipmentSlot.CHEST));
 		Runnable use = () -> Packets.sendSequenced(seq -> {
 			var p = mc().player;
@@ -117,6 +122,16 @@ public final class ChestSwap {
 		if (!elytraWorn() && !swap()) return false;
 		Packets.send(new ServerboundPlayerCommandPacket(mc().player, ServerboundPlayerCommandPacket.Action.START_FALL_FLYING));
 		return true;
+	}
+
+	/**
+	 * Whether the server has answered the last swap: what's worn can be trusted again. Until then the client may show a
+	 * moment that's already past: two swaps sent in one tick can reach the server in different ticks (jitter), and its
+	 * answer to the first puts the elytra back on the client for a tick.
+	 */
+	public static boolean settled() {
+		// Capped, so a glide waiting on it stays well short of the 20 ticks (1 s) that wear the elytra.
+		return System.currentTimeMillis() - lastSwapMs > Math.min(Myriad.server().ping() + SETTLE_MARGIN_MS, MAX_SETTLE_MS);
 	}
 
 	/** Puts the elytra back on if a chestplate is worn and the elytra is at hand. */

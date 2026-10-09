@@ -183,11 +183,13 @@ public class ElytraFly extends Module {
 	/**
 	 * Recast: ticks since the server's glide last (re)started, counted until the server says it stopped, landings
 	 * included: it can miss one (the landing and the next hop's packets handled in the same server tick, with jitter or
-	 * low TPS) and glide on through the next hop. The chestplate ends it at {@link #LONG_GLIDE}, a few ticks of jitter
+	 * low TPS) and glide on through the next hop. The chestplate ends it at {@link #LONG_GLIDE}, room for jitter and lag
 	 * short of the 20 that wear the elytra.
 	 */
 	private int longGlide;
-	private static final int LONG_GLIDE = 14;
+	private static final int LONG_GLIDE = 10;
+	/** Recast: a long glide is only cut this close to the ground, so dropping out of it can't cost a fall. */
+	private static final double CUT_HEIGHT = 2.5;
 	private float spoofYaw, spoofPitch;
 	/** Recast: the lane's direction (one of the eight highway directions, NaN until fixed) and a point on its line. */
 	private float lane = Float.NaN;
@@ -477,10 +479,12 @@ public class ElytraFly extends Module {
 			progressCount = 0;
 		}
 		if (pauseTicks > 0) {
-			// The server rejected a move: let its correction land before bouncing on from there.
+			// The server rejected a move: let its correction land before bouncing on from there. A glide the server
+			// started before it still gets cut short meanwhile.
 			pauseTicks--;
 			spoofing = holdGlide = false;
 			letGo();
+			cutLongGlide(elytraOpen(), false);
 			progressCount = 0;
 			return;
 		}
@@ -514,8 +518,10 @@ public class ElytraFly extends Module {
 			chestWarned = true;
 		}
 		boolean cleared = GlideHold.cleared(this);
-		longGlide = cleared || !gliding || !ChestSwap.elytraWorn() ? 0 : longGlide + 1;
-		if (cleared && !ground && airTicks >= 2) {
+		// What's worn only counts once the server has answered the last swap (see ChestSwap.settled): with jitter the
+		// client can show a moment that's already past, and swapping on that puts the client and Grim out of step.
+		boolean settled = !chestMode || ChestSwap.settled();
+		if (cleared && !ground && airTicks >= 2 && settled) {
 			// The server stopped the glide (at the landing, or when the chestplate went on) and the client kept it up:
 			// start it again now you're back in the air, the held ping answers first (on the tick jump goes down) so
 			// Grim sees the stop, then the start.
@@ -529,14 +535,26 @@ public class ElytraFly extends Module {
 				}
 			}
 			startGliding();
-		} else if (!gliding && !ground) {
+		} else if (!gliding && !ground && !cleared) {
 			// Take off the same way, after the first jump or off a ledge (the elytra on first, if it's off).
 			if (chestMode) ChestSwap.restoreElytra();
 			startGliding();
-		} else if (chestMode && longGlide >= LONG_GLIDE) {
-			ChestSwap.swap();
-			longGlide = 0;
+		} else {
+			cutLongGlide(gliding, cleared);
 		}
+	}
+
+	/**
+	 * Counts the server's glide since it started (see {@link #longGlide}) and, with No Durability, ends it with the
+	 * chestplate once it runs long: only once the server has answered the last swap, and with the ground close below.
+	 */
+	private void cutLongGlide(boolean gliding, boolean cleared) {
+		var p = mc.player;
+		longGlide = cleared || !gliding || !ChestSwap.elytraWorn() ? 0 : longGlide + 1;
+		if (!chestMode || longGlide < LONG_GLIDE || !ChestSwap.settled()) return;
+		if (mc.level.noBlockCollision(p, p.getBoundingBox().expandTowards(0, -CUT_HEIGHT, 0))) return;
+		ChestSwap.swap();
+		longGlide = 0;
 	}
 
 	/**

@@ -295,6 +295,31 @@ def t_elytra_recast_no_durability():
     return 0 <= damage <= 1 and x - 4000 > 300, f"elytra damage {damage} after {x - 4000:.0f} blocks of bouncing (30 s)"
 
 
+def t_elytra_recast_diagonal():
+    # 2b2t's diagonals: a 3-wide band along x=z. The server misses more landings here, so No Durability's cut matters
+    # most; 15 s of bouncing with the chestplate in the main inventory mustn't wear the elytra.
+    x0, length = 7000, 500
+    client("respawn", ".panic", "wait 20")
+    cmd("forceload remove all")
+    chunks = {((x0 + i + dx) >> 4, (i + dz) >> 4) for i in range(-8, length + 8) for dx in (-6, 6) for dz in (-6, 6)}
+    cmd(*[f"forceload add {cx * 16} {cz * 16}" for cx, cz in chunks])
+    cmd(f"tp {P} {x0}.5 201 0.5 -45 0")
+    time.sleep(2)
+    lane = []
+    for i in range(-5, length):
+        lane += [f"fill {x0 + i} 200 {i - 4} {x0 + i} 206 {i + 4} air", f"fill {x0 + i} 200 {i - 1} {x0 + i} 200 {i + 1} obsidian"]
+    cmd(*lane)
+    cmd(f"clear {P}", f"gamemode survival {P}", f"effect clear {P}", f"effect give {P} saturation 1 20 true", f"item replace entity {P} armor.chest with elytra",
+        f"item replace entity {P} inventory.5 with diamond_chestplate", f"tp {P} {x0}.5 201 0.5 -45 0")
+    time.sleep(1)
+    client(".set elytra_tweaks no_durability true", ".toggle elytra_tweaks on", ".set elytra_fly mode recast", ".set elytra_fly obstacles stop", "wait 10",
+        ".toggle elytra_fly on", "wait 300", ".toggle elytra_fly off", ".toggle elytra_tweaks off", "wait 20", timeout=90)
+    x, y, z = position()
+    worn = elytra_damage()
+    cmd("forceload remove all")
+    return worn == 0 and x - x0 > 200 and y > 200.5, f"elytra damage {worn} after {(x - x0) * 1.414:.0f} blocks of diagonal, {abs(x - x0 - z + 0.5) / 1.414:.2f} off the line"
+
+
 def t_elytra_recast_low_ceiling():
     # Turned on under a two-high roof: it walks out from under it (mining nothing) and bounces on from there.
     recast_highway("fill 3995 203 -1 4030 203 1 stone", f"item replace entity {P} hotbar.0 with netherite_pickaxe[enchantments={{efficiency:5}}]")
@@ -432,6 +457,7 @@ TESTS = [
     ("elytra_fly recast obstacles", t_elytra_recast_obstacles),
     ("elytra_fly recast no durability", t_elytra_recast_no_durability),
     ("elytra_fly recast low ceiling", t_elytra_recast_low_ceiling),
+    ("elytra_fly recast diagonal", t_elytra_recast_diagonal),
     ("elytra_tweaks no durability", t_elytra_no_durability),
     ("elytra_tweaks no durability landing", t_elytra_no_durability_landing),
     ("elytra_fly altitude wearing out", t_elytra_wearing_out),

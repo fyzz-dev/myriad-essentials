@@ -32,7 +32,7 @@ public class NoRender extends Module {
 	public final BoolSetting blockOverlay = sgOverlays.bool("Block Overlay").description("No texture when your head is inside a block.").defaultValue(true).build();
 	public final BoolSetting liquidOverlay = sgOverlays.bool("Liquid Overlay").description("No underwater texture.").build();
 	public final BoolSetting vignette = sgOverlays.bool("Vignette").defaultValue(true).build();
-	public final BoolSetting portal = sgOverlays.bool("Portal Overlay").description("No purple swirl or nausea overlay.").defaultValue(true).build();
+	public final BoolSetting portal = sgOverlays.bool("Portal Overlay").description("No purple swirl or screen warp while you stand in a portal.").defaultValue(true).build();
 	public final BoolSetting pumpkin = sgOverlays.bool("Pumpkin Overlay").defaultValue(true).build();
 	public final BoolSetting powderSnow = sgOverlays.bool("Powder Snow Overlay").description("No frost around the screen while freezing.").defaultValue(true).build();
 	public final BoolSetting spyglass = sgOverlays.bool("Spyglass Overlay").description("Zoom with a spyglass without the black ring.").build();

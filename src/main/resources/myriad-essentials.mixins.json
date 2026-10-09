@@ -8,6 +8,7 @@
 		"ArmorFeatureRendererMixin",
 		"AtmosphericFogMixin",
 		"BossBarHudMixin",
+		"ChatComponentMixin",
 		"CameraMixin",
 		"ClientCommonPacketListenerMixin",
 		"ClientLevelMixin",
