@@ -55,8 +55,10 @@ import java.util.List;
  * while you're rising and levels out as you fall, which turns each bounce into the most forward speed. The server
  * stops the glide at each landing; the answers to Grim's pings from then on are held back until you're in the air again
  * (see GlideHold), so Grim keeps expecting the glide the client keeps up, and the elytra is opened again (with a jump
- * press, as vanilla does) right after they're sent. The server's glide restarts every hop, so the elytra doesn't wear
- * either (with No Durability, long glides are cut with a chestplate, paused while you eat). The highway is fixed when
+ * press, as vanilla does) right after they're sent. The server's glide restarts every hop, so on vanilla servers the
+ * elytra doesn't wear. 2b2t counts every tick the server glides you, however short each glide: with No Durability the
+ * chestplate stays on through each hop and the elytra only goes on for the moment of the start, so the server barely
+ * glides at all (paused while you eat). The highway is fixed when
  * you turn it on (the nearest 45° to where you face, through the middle of the block you stand on), so looking around
  * never steers; drifting off that line turns the flight a little back onto it. Far enough ahead to stop in time (it
  * grows with your speed) it watches for anything in the way: a block (an ender chest, a portal, a wall), a hole you
@@ -202,8 +204,19 @@ public class ElytraFly extends Module {
 	private double groundY;
 	/** Recast: ticks since you last touched the ground. */
 	private int airTicks;
-	/** Recast: swapping the elytra with a chestplate (No Durability) to end glides that run long. */
+	/**
+	 * Recast with No Durability: the chestplate is worn through each hop, the elytra going on only for the moment of
+	 * each glide start (see {@link #bounce}).
+	 */
 	private boolean chestMode;
+	/**
+	 * Recast, chestplate on: a start has gone out since you last touched the ground; and ticks since it did. One a hop
+	 * is enough (the glide hold covers the rest of it); a hop that runs long (off an edge) gets another every
+	 * {@link #RESTART_TICKS}, as Elytra Tweaks' swapping does, well inside the hold's second.
+	 */
+	private boolean hopStarted;
+	private int sinceStart;
+	private static final int RESTART_TICKS = 8;
 	/**
 	 * Recast: ticks since the server's glide last (re)started, counted until the server says it stopped, landings
 	 * included: it can miss one (the landing and the next hop's packets handled in the same server tick, with jitter or
@@ -271,7 +284,8 @@ public class ElytraFly extends Module {
 		laneY = Double.NaN;
 		letGo();
 		putElytraBack();
-		pathWait = pauseTicks = progressCount = 0;
+		pathWait = pauseTicks = progressCount = sinceStart = 0;
+		hopStarted = false;
 		pathTarget = null;
 		lane = Float.NaN;
 		setbacks.clear();
@@ -580,6 +594,8 @@ public class ElytraFly extends Module {
 		Interactions.setJumpCooldown(0);
 		boolean ground = mc.player.onGround();
 		airTicks = ground ? 0 : airTicks + 1;
+		sinceStart++;
+		if (ground) hopStarted = false;
 		if (ground) {
 			groundY = mc.player.getY();
 			wantJump = true;
@@ -587,10 +603,11 @@ public class ElytraFly extends Module {
 
 		boolean gliding = elytraOpen();
 		if (gliding) holdGlide = true;
-		// With Elytra Tweaks' No Durability: the server wears the elytra once one of its glides lasts 20 ticks, which a
-		// hop never does unless the server misses the landing (packets bunched up) or you glide off an edge. A glide
-		// running that long gets the chestplate put on, so the server stops it first; it's opened again as usual. No
-		// chestplate in the hotbar or off hand: one is brought in from the inventory.
+		// With Elytra Tweaks' No Durability the chestplate is worn through each hop: 2b2t wears the elytra by every tick
+		// the server glides you, a stop doesn't reset its count (vanilla needs 20 ticks of one glide), so the server
+		// should glide as little as it can. Each start puts the elytra on, starts the glide and puts the chestplate back
+		// on in the same tick: the server glides for a tick at most, and the glide hold keeps you (and Grim) gliding
+		// through the rest. No chestplate in the hotbar or off hand: one is brought in from the inventory.
 		// Not while you eat (or use anything held): Grim stops it at every swap (see onUse).
 		chestMode = ElytraTweaks.noDurability() && ChestSwap.ready() && !mc.player.isUsingItem();
 		if (ElytraTweaks.noDurability()) ElytraTweaks.chestplateAtHand(false);
@@ -598,14 +615,19 @@ public class ElytraFly extends Module {
 		// What's worn only counts once the server has answered the last swap (see ChestSwap.settled): with jitter the
 		// client can show a moment that's already past, and swapping on that puts the client and Grim out of step.
 		boolean settled = !chestMode || ChestSwap.settled();
-		if (cleared && !ground && airTicks >= 2 && settled) {
+		boolean startDue = !chestMode || !hopStarted || sinceStart >= RESTART_TICKS;
+		if (cleared && !ground && airTicks >= 2 && settled && startDue) {
 			// The server stopped the glide (at the landing, or when the chestplate went on) and the client kept it up:
 			// start it again now you're back in the air, the held ping answers first (on the tick jump goes down) so
 			// Grim sees the stop, then the start.
 			if (!jumpedLastTick) {
 				GlideHold.release(this);
-				// The elytra is off (a long glide was stopped): it goes back on with the start, sent here.
-				if (!(chestMode && !ChestSwap.elytraWorn() && ChestSwap.startGlide())) {
+				if (chestMode && ChestSwap.startGlide()) {
+					// The start (the elytra on first, if it's off) is sent here; the chestplate goes straight back on.
+					ChestSwap.swap();
+					hopStarted = true;
+					sinceStart = 0;
+				} else {
 					// Not gliding for vanilla's check this tick, so its jump press opens the elytra (and sends the start).
 					holdGlide = false;
 					mc.player.stopFallFlying();
