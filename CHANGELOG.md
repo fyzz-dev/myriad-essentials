@@ -3,6 +3,18 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.14
+
+Needs Myriad 0.2.8.
+
+- Elytra Fly Recast with Elytra Tweaks' No Durability no longer wears the elytra on 2b2t. 2b2t counts every tick the
+  server glides you towards the wear, however short each glide and across landings (vanilla only wears a glide that
+  lasts 20 ticks, which a hop never does), so bouncing wore about 2.5 durability every 1000 blocks there. Now the
+  chestplate is worn through each hop: every glide start puts the elytra on, starts the glide and puts the chestplate
+  back on in the same tick, and the glide hold keeps you gliding through the rest of the hop. A hop that runs long (off
+  an edge) gets another start every 8 ticks. The server glides about 9% of the time instead of about 60%, at the same
+  speed: about 46,000 blocks on 2b2t without a point of wear.
+
 ## 0.2.13
 
 Needs Myriad 0.2.8.
