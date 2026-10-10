@@ -5,11 +5,13 @@ import dev.myriad.api.event.Subscribe;
 import dev.myriad.api.event.events.TickEvent;
 import dev.myriad.api.module.Categories;
 import dev.myriad.api.module.Module;
+import dev.myriad.api.module.Modules;
 import dev.myriad.api.setting.BoolSetting;
 import dev.myriad.api.setting.IntSetting;
 import dev.myriad.api.setting.RegistryListSetting;
 import dev.myriad.api.util.Baritone;
 import dev.myriad.api.util.Interactions;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.food.FoodProperties;
@@ -55,6 +57,9 @@ public class AutoEat extends Module {
 	private int returnSlot = -1;
 	/** Ticks left before an eat that hasn't finished is given up. */
 	private int deadline;
+	/** Ticks left that the last refused bite (the server didn't start it) keeps {@link #wantsToEat} quiet. */
+	private int refused;
+	private static final int REFUSED_TICKS = 40;
 
 	public AutoEat() {
 		super(Categories.PLAYER, "Auto Eat", "Eats when your health or hunger gets low.");
@@ -70,8 +75,23 @@ public class AutoEat extends Module {
 		stop();
 	}
 
+	/**
+	 * Whether Auto Eat is eating, or about to (hungry or hurt enough, with something to eat): what would stop it waits
+	 * meanwhile, as Elytra Fly's swaps do (Grim stops eating at each), also between one bite and the next.
+	 */
+	public static boolean wantsToEat() {
+		AutoEat m = Modules.active(AutoEat.class);
+		if (m == null || Minecraft.getInstance().player == null) return false;
+		if (m.eatSlot >= 0) return true;
+		if (m.refused > 0) return false;
+		boolean health = m.lowHealth();
+		if (!health && !m.hungry()) return false;
+		return Myriad.inventory().bestInInventory(health ? m::healthScore : m::hungerScore) >= 0;
+	}
+
 	@Subscribe
 	private void onTick(TickEvent.Pre e) {
+		if (refused > 0) refused--;
 		if (!inGame()) {
 			stop();
 		} else if (eatSlot >= 0) {
@@ -107,6 +127,7 @@ public class AutoEat extends Module {
 		Interactions.useItem(InteractionHand.MAIN_HAND);
 		if (!mc.player.isUsingItem()) {
 			// The server didn't start it (cooldown, full hunger with a non-always-edible food): just switch back.
+			refused = REFUSED_TICKS;
 			Myriad.inventory().select(returnSlot);
 			returnSlot = -1;
 			giveBack();

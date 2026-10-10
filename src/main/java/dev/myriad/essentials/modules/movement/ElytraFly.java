@@ -4,7 +4,6 @@ import dev.myriad.api.Myriad;
 import dev.myriad.api.event.Priority;
 import dev.myriad.api.event.Subscribe;
 import dev.myriad.api.event.events.InputEvent;
-import dev.myriad.api.event.events.InteractEvent;
 import dev.myriad.api.event.events.PacketEvent;
 import dev.myriad.api.event.events.TickEvent;
 import dev.myriad.api.module.Categories;
@@ -12,6 +11,7 @@ import dev.myriad.api.module.Module;
 import dev.myriad.api.module.Modules;
 import dev.myriad.api.build.Target;
 import dev.myriad.api.service.Breaking;
+import dev.myriad.api.service.Notifications;
 import dev.myriad.api.service.Placement;
 import dev.myriad.api.service.Rotations;
 import dev.myriad.api.setting.EnumSetting;
@@ -19,6 +19,7 @@ import dev.myriad.api.util.ItemInfo;
 import dev.myriad.api.util.Baritone;
 import dev.myriad.api.util.Interactions;
 import dev.myriad.api.util.Packets;
+import dev.myriad.essentials.modules.player.AutoEat;
 import dev.myriad.essentials.util.ChestSwap;
 import dev.myriad.essentials.util.GlideHold;
 import net.minecraft.client.Minecraft;
@@ -390,17 +391,6 @@ public class ElytraFly extends Module {
 		jumpedLastTick = e.jump;
 	}
 
-	/**
-	 * Something you hold to use (food, a potion) waits while the chestplate is on: putting the elytra back at the next
-	 * redeploy is a swap, which Grim takes as using another item and stops what you were using. It's used once the
-	 * elytra is back (Auto Eat tries again, and holding right click uses it again); no swaps run meanwhile.
-	 */
-	@Subscribe
-	private void onUse(InteractEvent.Item e) {
-		if (state != State.BOUNCING || !chestMode || !inGame() || ChestSwap.elytraWorn()) return;
-		if (mc.player.getItemInHand(e.hand()).getUseDuration(mc.player) > 0) e.cancel();
-	}
-
 	@Subscribe(packets = ClientboundPlayerPositionPacket.class)
 	private void onPacket(PacketEvent.Receive e) {
 		flagged = true;
@@ -608,15 +598,24 @@ public class ElytraFly extends Module {
 		// should glide as little as it can. Each start puts the elytra on, starts the glide and puts the chestplate back
 		// on in the same tick: the server glides for a tick at most, and the glide hold keeps you (and Grim) gliding
 		// through the rest. No chestplate in the hotbar or off hand: one is brought in from the inventory.
-		// Not while you eat (or use anything held): Grim stops it at every swap (see onUse).
-		chestMode = ElytraTweaks.noDurability() && ChestSwap.ready() && !mc.player.isUsingItem();
+		// Not while you eat (or use anything held): Grim stops it at every swap. And then no glides at all: the hops go
+		// on without (a little slower) until you're done. With the elytra on, each would last the whole hop, and eating
+		// can go on for several items. Nothing is swapped meanwhile, so eating can start whenever (Auto Eat, or right
+		// click), the chestplate on or not; between Auto Eat's bites too, or a swap would stop the next one.
+		boolean eating = ElytraTweaks.noDurability() && (mc.player.isUsingItem() || AutoEat.wantsToEat());
+		chestMode = ElytraTweaks.noDurability() && ChestSwap.ready() && !eating;
+		boolean mayGlide = !eating;
 		if (ElytraTweaks.noDurability()) ElytraTweaks.chestplateAtHand(false);
 		boolean cleared = GlideHold.cleared(this);
 		// What's worn only counts once the server has answered the last swap (see ChestSwap.settled): with jitter the
 		// client can show a moment that's already past, and swapping on that puts the client and Grim out of step.
 		boolean settled = !chestMode || ChestSwap.settled();
 		boolean startDue = !chestMode || !hopStarted || sinceStart >= RESTART_TICKS;
-		if (cleared && !ground && airTicks >= 2 && settled && startDue) {
+		// Grim already knows the server stopped the glide (its ping got answered before the hold could take it, see
+		// GlideHold.exposed): start again at once, or it sets you back for gliding on. Without waiting for the last swap
+		// to settle: the stop is the server's answer to it.
+		boolean exposed = GlideHold.exposed(this);
+		if (cleared && !ground && airTicks >= 2 && (exposed || settled && startDue)) {
 			// The server stopped the glide (at the landing, or when the chestplate went on) and the client kept it up:
 			// start it again now you're back in the air, the held ping answers first (on the tick jump goes down) so
 			// Grim sees the stop, then the start.
@@ -633,10 +632,21 @@ public class ElytraFly extends Module {
 					mc.player.stopFallFlying();
 				}
 			}
-			startGliding();
-		} else if (!gliding && !ground && !cleared) {
-			// Take off the same way, after the first jump or off a ledge (the elytra on first, if it's off).
-			if (chestMode) ChestSwap.restoreElytra();
+			if (mayGlide) startGliding();
+		} else if (!gliding && !ground && !cleared && mayGlide) {
+			// Take off the same way, after the first jump or off a ledge. With the chestplate on through each hop, as a
+			// restart: the elytra on, the start and the chestplate back on in one tick, the client (and Grim) gliding on
+			// with the hold. Left to vanilla (the elytra put on, its jump press starting the glide), the server would
+			// glide you to the landing: the first hop, and the first after you eat, a Baritone hand-over or a setback.
+			if (chestMode && airTicks >= 2 && settled && !jumpedLastTick && ChestSwap.startGlide()) {
+				ChestSwap.swap();
+				// The client glides from this start too, as vanilla's would have it (or the next tick takes off again:
+				// a second start while Grim has you gliding, its ElytraA).
+				mc.player.startFallFlying();
+				holdGlide = true;
+				hopStarted = true;
+				sinceStart = 0;
+			}
 			startGliding();
 		} else {
 			cutLongGlide(gliding, cleared);
@@ -744,8 +754,16 @@ public class ElytraFly extends Module {
 			leave(why);
 			return;
 		}
-		if (!warned) warn(why + ", waiting until it's clear");
+		if (!warned) status(why + ", waiting until it's clear", true);
 		warned = true;
+	}
+
+	/**
+	 * What Recast is doing about the lane (Baritone taking you past something, waiting at a block): one notification,
+	 * each replacing the last (the same one again is counted on it), not a stack of them on a broken stretch.
+	 */
+	private void status(String message, boolean warning) {
+		Myriad.notifications().send(name(), message, warning ? Notifications.Level.WARNING : Notifications.Level.INFO, warning ? 4000 : 3000, "essentials:recast");
 	}
 
 	/** If Blocked: disconnects (turning off first, so it doesn't carry on when you join again). Not in singleplayer. */
@@ -884,6 +902,11 @@ public class ElytraFly extends Module {
 
 	/** Whether you've been trying to move along the lane without getting anywhere; if so the lane counts as blocked. */
 	private boolean trackStuck() {
+		// Eating slows you nearly to a stop (and starts no glides, see bounce): that's not being stuck.
+		if (mc.player.isUsingItem()) {
+			progressCount = 0;
+			return false;
+		}
 		double along = along(mc.player.position());
 		int slot = progressCount % STUCK_TICKS;
 		boolean stuck = progressCount >= STUCK_TICKS && along - progress[slot] < STUCK_PROGRESS;
@@ -961,7 +984,7 @@ public class ElytraFly extends Module {
 			blocked(why + " and Baritone can't get past");
 			return;
 		}
-		info(why + ": Baritone is taking you past it");
+		status(why + ": Baritone is taking you past it", false);
 		pathTarget = target;
 		state = State.PATHING;
 		pathWait = pathStall = 0;
@@ -992,7 +1015,10 @@ public class ElytraFly extends Module {
 		holdGlide = false;
 		letGo();
 		Vec3 pos = mc.player.position();
-		if (mc.player.onGround() && along(pos) >= along(pathTarget) - 1 && Math.abs(offLine(pos)) <= 1 && !offLane()) {
+		// At the goal's height too: left on top of what was in the way (Baritone climbed it), the goal can be just ahead
+		// and below, and bouncing from up there runs straight back into it.
+		if (mc.player.onGround() && along(pos) >= along(pathTarget) - 1 && Math.abs(offLine(pos)) <= 1 && Math.abs(pos.y - pathTarget.y) < 0.6
+			&& !offLane()) {
 			Baritone.stop();
 			endHandoff();
 			// As the lane was fixed: along it, the camera's own way round so it doesn't spin.

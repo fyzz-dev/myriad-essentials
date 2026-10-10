@@ -317,12 +317,14 @@ public class ElytraTweaks extends Module {
 	 * A safety net: the glide stopping in mid-air with nothing a player would stop it for (no ground, water, ladder or
 	 * vehicle) means the server's stop got through to the client (a setback, a lost hold, chunks that came in late), and
 	 * a fall from there could cost every block the server counted while it wasn't gliding you. So the elytra is opened
-	 * again at once, as a player would: on if a chestplate is worn, then jump released for a tick and pressed.
+	 * again at once, as a player would: on if a chestplate is worn, then jump released for a tick and pressed. Not when
+	 * you'd land without hurting (Recast turned off mid-hop, a foot above the highway): opened there, the glide would
+	 * skim the ground for the next 30 blocks, wearing the elytra, with No Durability's swapping kept off by the ground.
 	 */
 	private void catchGlide(LocalPlayer p) {
 		boolean gliding = p.isFallFlying();
 		boolean free = !p.onGround() && !p.isInWater() && !p.isPassenger() && !p.onClimbable() && !p.getAbilities().flying;
-		if (wasGliding && !gliding && free && !ElytraFly.bouncing()) {
+		if (wasGliding && !gliding && free && !ElytraFly.bouncing() && !softLanding(p)) {
 			catching = CATCH_TICKS;
 			info("Glide dropped in mid-air: opening the elytra again");
 		}
@@ -344,6 +346,23 @@ public class ElytraTweaks extends Module {
 	}
 
 	private boolean lastCatchPress;
+
+	/**
+	 * Whether you'd come down from here without fall damage: ground within the fall the server lets go (counting what
+	 * it has already, and the rise still to come), under you and under where you're carried while you fall.
+	 */
+	private boolean softLanding(LocalPlayer p) {
+		Vec3 v = p.getDeltaMovement();
+		double rise = v.y > 0 ? v.y * v.y / (2 * 0.08) : 0;
+		double drop = SAFE_DESCENT - 0.5 - descent - rise;
+		if (drop <= 0) return false;
+		AABB box = p.getBoundingBox();
+		// Where you'll be over the next half second, taken at full speed (you slow down off the elytra, so that's farther).
+		for (int t = 0; t <= 10; t += 2) {
+			if (mc.level.noBlockCollision(p, box.move(v.x * t, 0, v.z * t).expandTowards(0, -drop, 0))) return false;
+		}
+		return true;
+	}
 
 	/**
 	 * A rocket used meanwhile waits for the next start: the server only attaches rockets while it sees you gliding.
