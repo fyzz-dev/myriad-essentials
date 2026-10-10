@@ -3,6 +3,29 @@
 Myriad Essentials is versioned on its own, apart from [Myriad](https://github.com/fyzz-dev/myriad) core. Each
 release says which core it needs (`myriad_version` in `gradle.properties`, the `depends` in `fabric.mod.json`).
 
+## 0.2.15
+
+Needs Myriad 0.2.9 (for the ping 2b2t's tab list doesn't show, which Recast's chestplate swaps wait on).
+
+- Elytra Fly Recast with No Durability: take-offs go like every other glide start, the elytra on, the start and the
+  chestplate back on in one tick. They were left to vanilla (the elytra put on, its jump press starting the glide), so
+  the server glided you on the elytra to the landing: on the first hop, and the first after eating, a Baritone
+  hand-over or a setback. Those were all the wear 0.2.14 had left (7 points in about 146,000 blocks on 2b2t); with this,
+  none in 53,000. The client glides from that start too, or it took off again the next tick (Grim's ElytraA).
+- Recast and eating: Auto Eat eats while you bounce. Recast cancelled any food used while the chestplate was on, which
+  with 0.2.14 was nearly always, so hunger ran down until you couldn't sprint (and bouncing slowed to a crawl). While you
+  eat, or Auto Eat is about to (between one item and the next), no glides start and nothing is swapped, as each swap
+  would stop the eating; the hops go on, slower, and running slow then doesn't count as being stuck.
+- Recast: when Grim learns the glide stopped before the glide hold could keep it from it (its ping answered first),
+  the glide starts again at once instead of waiting out the hop, which was a setback.
+- Recast with Baritone: the hand-over is only done once you're at the lane's height. Baritone could leave you on top of
+  what was in the way, just above its goal, and Recast took that as there, ran into it again and handed over again,
+  every other tick, until you stepped in.
+- Recast's notifications: one at a time, each replacing the last ("Lane blocked: Baritone is taking you past it" once,
+  counted, instead of a stack of them on a broken stretch).
+- Elytra Tweaks no longer opens the elytra again for a glide that drops where the landing can't hurt (Recast turned off
+  mid-hop, a foot above the highway): it skimmed the ground for 30 blocks or more, wearing the elytra.
+
 ## 0.2.14
 
 Needs Myriad 0.2.8.
